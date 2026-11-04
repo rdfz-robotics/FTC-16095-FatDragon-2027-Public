@@ -44,9 +44,31 @@ public class Constants {
         c.yPodDirection.set(DriveConstants.pinpointStrafePodDirection);
     });
 
-    // Paste the entire Foresight Tuner Java export here, replacing this declaration.
-    // Its Controller, Matrix, and Vector2D imports are already included above.
-    public static ForesightConfig foresightConfig = null;
+    public static ForesightConfig foresightConfig = new ForesightConfig(
+            c -> {
+                Controller primaryTranslationalForward = Controller.proportional(0.30078914408329804);
+                Controller secondaryTranslationalForward = Controller.proportional(0.11113355150482486);
+                Controller primaryTranslationalLateral = Controller.proportional(0.9011460873421373);
+                Controller secondaryTranslationalLateral = Controller.proportional(0.33294940020599545);
+
+                c.forwardTranslational.set(Controller.piecewise(secondaryTranslationalForward).put(2.5, primaryTranslationalForward));
+                c.strafeTranslational.set(Controller.piecewise(secondaryTranslationalLateral).put(2.5, primaryTranslationalLateral));
+
+                c.coast.set(Controller.proportionalFeedforward(0.01911059273741491));
+                c.brake.set(Controller.proportionalFeedforward(0.01624400382680267));
+
+                c.headingFeedback.set(Controller.proportional(4.717434192704739));
+                c.headingBrakeCoefficients.set(Vector2D.cartesian(0.08312283414119992, -8.564387987015544E-4));
+
+                c.linearBrakeCoefficients.set(Matrix.diag(0.16871065428885162, 0.07420113929680525));
+                c.quadraticBrakeCoefficients.set(Matrix.diag(-0.002247858134087847, 0.001471049425502552));
+
+                c.maxAchievableForwardVelocity.set(54.471127258910975);
+                c.maxAchievableStrafeVelocity.set(54.65582602741854);
+                c.naturalForwardDeceleration.set(64.98071052759337);
+                c.naturalStrafeDeceleration.set(90.19049501060306);
+            }
+    );
 
     public static Foresight createAlgorithm() {
         if (foresightConfig == null) {

@@ -4,6 +4,7 @@ import com.arcrobotics.ftclib.command.SubsystemBase;
 import com.arcrobotics.ftclib.controller.PIDFController;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
+import com.qualcomm.robotcore.hardware.DcMotorSimple;
 import com.qualcomm.robotcore.hardware.HardwareMap;
 import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.util.Range;
@@ -30,12 +31,17 @@ public class Shooter extends SubsystemBase {
     private long pitchChangedAtNanos;
 
     public Shooter(HardwareMap hardwareMap) {
+        this(hardwareMap, ShooterConstants.leftShooterDirection, ShooterConstants.rightShooterDirection);
+    }
+
+    public Shooter(HardwareMap hardwareMap, DcMotorSimple.Direction leftDirection,
+                   DcMotorSimple.Direction rightDirection) {
         leftShooter = hardwareMap.get(DcMotorEx.class, ShooterConstants.leftShooterName);
         rightShooter = hardwareMap.get(DcMotorEx.class, ShooterConstants.rightShooterName);
         pitchServo = hardwareMap.get(Servo.class, ShooterConstants.pitchServoName);
 
-        leftShooter.setDirection(ShooterConstants.leftShooterDirection);
-        rightShooter.setDirection(ShooterConstants.rightShooterDirection);
+        leftShooter.setDirection(leftDirection);
+        rightShooter.setDirection(rightDirection);
         leftShooter.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
         rightShooter.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
 
