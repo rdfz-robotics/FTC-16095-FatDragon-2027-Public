@@ -9,10 +9,14 @@ import org.firstinspires.ftc.teamcode.subsystems.transit.Transit.FiringState;
 import java.util.Objects;
 import java.util.function.BooleanSupplier;
 import java.util.function.DoubleSupplier;
+import java.util.function.Supplier;
 
 /** Mechanism-only shooting, shared by TeleOp and autonomous. Distances are centimeters. */
 public final class ShootCommand extends CommandBase {
-    public enum Result { RUNNING, SUCCEEDED, TIMED_OUT, INTERRUPTED }
+    public enum Result { RUNNING, SUCCEEDED, TIMED_OUT, INTERRUPTED, ABORTED }
+
+    /** Readiness gates opening; these inputs explicitly cancel an unsafe sequence. */
+    public enum FeedPermission { ALLOW, WAIT_FOR_START, INVALID_TARGET, ABORT }
 
     private final Shooter shooter;
     private final Intake intake;
@@ -22,6 +26,9 @@ public final class ShootCommand extends CommandBase {
     private final BooleanSupplier intakeRequested;
     private final BooleanSupplier jamRequested;
     private final BooleanSupplier intakeReverseRequested;
+    private Supplier<FeedPermission> feedPermission = () -> FeedPermission.ALLOW;
+    private boolean preservePreheat;
+    private boolean validTarget;
     private long feedDurationMs = -1;
     private long totalTimeoutMs = -1;
     private long startedNanos;
@@ -59,12 +66,24 @@ public final class ShootCommand extends CommandBase {
         this.totalTimeoutMs = totalTimeoutMs;
     }
 
+    /** Autonomous adapter supplies safety decisions; only this command writes the mechanisms. */
+    public ShootCommand(Shooter shooter, Intake intake, Transit transit,
+                        DoubleSupplier distanceCm, BooleanSupplier aimReady,
+                        Supplier<FeedPermission> feedPermission, boolean preservePreheat,
+                        long feedDurationMs, long totalTimeoutMs) {
+        this(shooter, intake, transit, distanceCm, aimReady, feedDurationMs, totalTimeoutMs);
+        this.feedPermission = Objects.requireNonNull(feedPermission);
+        this.preservePreheat = preservePreheat;
+    }
+
     @Override
     public void initialize() {
         startedNanos = System.nanoTime();
         feedElapsedMs = 0;
         result = Result.RUNNING;
-        shooter.stop();
+        validTarget = false;
+        if (!preservePreheat) shooter.stop();
+        if (totalTimeoutMs > 0) intake.stop();
         resetFiringSequence(FiringState.WAITING);
     }
 
@@ -75,18 +94,37 @@ public final class ShootCommand extends CommandBase {
             result = Result.TIMED_OUT;
             return;
         }
+        FeedPermission permission = feedPermission.get();
+        if (permission == FeedPermission.ABORT) {
+            result = Result.ABORTED;
+            return;
+        }
+        if (permission == null || permission == FeedPermission.INVALID_TARGET) {
+            validTarget = false;
+            shooter.stop();
+            intake.stop();
+            resetFiringSequence(FiringState.WAITING);
+            return;
+        }
         boolean jam = jamRequested.getAsBoolean();
         boolean reverseIntake = intakeReverseRequested.getAsBoolean();
         intake.setReverseRequested(reverseIntake);
         intake.updateInputs(intakeRequested.getAsBoolean(), jam, true);
         if (jam) {
+            validTarget = false;
             shooter.stop();
             resetFiringSequence(FiringState.WAITING);
             transit.reverse();
             return;
         }
 
-        if (!shooter.setDistanceTarget(distanceCm.getAsDouble())) {
+        validTarget = shooter.setDistanceTarget(distanceCm.getAsDouble());
+        if (!validTarget) {
+            resetFiringSequence(FiringState.WAITING);
+            if (totalTimeoutMs > 0) intake.stop();
+        } else if (permission == FeedPermission.WAIT_FOR_START && !canFire()) {
+            // HIGH may disappear during REVERSING. requestFeed(false) alone
+            // would keep that committed sequence running, so cancel explicitly.
             resetFiringSequence(FiringState.WAITING);
         } else {
             canPrepareToFire = aimReady.getAsBoolean()
@@ -125,6 +163,7 @@ public final class ShootCommand extends CommandBase {
     public FiringState getFiringState() { return transit.getFiringState(); }
     public Result getResult() { return result; }
     public long getFeedElapsedMs() { return feedElapsedMs; }
+    public boolean hasValidTarget() { return validTarget; }
 
     private void resetFiringSequence(FiringState next) {
         if (transit.getState() == Transit.TransitState.OPEN) intake.clearBallCount();

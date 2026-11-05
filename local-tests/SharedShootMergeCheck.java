@@ -144,10 +144,10 @@ public final class SharedShootMergeCheck {
         double[] opening = VisionConstants.cellTargetFieldXYInches[
                 CellCluster.RED_OPPOSITE_AUDIENCE.getTuningIndex()];
         double expected = 2.54 * Math.hypot(opening[0] - (pose.x() - 72), opening[1] - (pose.y() - 72));
-        for (String name : new String[]{"RedFourBallCornerTest", "RedFourBallCommandAuto", "RedHalfTwoTipTest"}) {
+        for (String name : new String[]{"RedFourBallCornerTest"}) {
             Class<?> type = Class.forName("org.firstinspires.ftc.teamcode.opmodes.autos." + name);
             Object auto = U.allocateInstance(type);
-            set(auto, type, name.equals("RedHalfTwoTipTest") ? "holdPose" : "shootHoldPose", pose);
+            set(auto, type, "shootHoldPose", pose);
             Method distance = type.getDeclaredMethod("shotDistanceCm");
             distance.setAccessible(true);
             check(Math.abs((double) distance.invoke(auto) - expected) < 1e-9,

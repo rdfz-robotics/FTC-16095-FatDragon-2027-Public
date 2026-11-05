@@ -51,7 +51,7 @@ def main():
         return compiled.returncode
     names = args.checks or ['AutoAimPidfCheck', 'ShooterDistanceCheck', 'PracticeBlueCheck',
                            'RtCalibrationCheck', 'HiveGeometryCheck', 'TestAutoCheck',
-                           'PedroTuningCheck', 'SharedShootMergeCheck']
+                           'PedroTuningCheck', 'SharedShootMergeCheck', 'SharedAutoAimCheck']
     results = []
     for name in names:
         if not re.fullmatch(r'[A-Za-z][A-Za-z0-9]*', name):

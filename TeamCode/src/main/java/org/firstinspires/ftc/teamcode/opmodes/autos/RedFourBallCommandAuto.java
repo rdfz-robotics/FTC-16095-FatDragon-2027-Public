@@ -13,18 +13,20 @@ import com.qualcomm.robotcore.eventloop.opmode.Autonomous;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.util.RobotLog;
 
-import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
 import org.firstinspires.ftc.teamcode.pedro.Constants;
 import org.firstinspires.ftc.teamcode.commands.ShootCommand;
+import org.firstinspires.ftc.teamcode.commands.AutoShootCommand;
 import org.firstinspires.ftc.teamcode.subsystems.intake.Intake;
 import org.firstinspires.ftc.teamcode.subsystems.shooter.Shooter;
 import org.firstinspires.ftc.teamcode.subsystems.transit.Transit;
 import org.firstinspires.ftc.teamcode.subsystems.vision.CellCluster;
-import org.firstinspires.ftc.teamcode.subsystems.vision.VisionConstants;
+import org.firstinspires.ftc.teamcode.subsystems.vision.Alliance;
+import org.firstinspires.ftc.teamcode.subsystems.vision.AutoHiveTarget;
+import org.firstinspires.ftc.teamcode.subsystems.vision.Vision;
 
 /** Red-side test: one path, feed the four preloads at the corner, then one path. */
 @Config
-@Autonomous(name = "Red 4 Ball Command Auto v8", group = "Test")
+@Autonomous(name = "Red 4 Ball Shared Aim v9", group = "Test")
 public final class RedFourBallCommandAuto extends LinearOpMode {
     private enum Stage { FIRST_PATH, SETTLE_AT_CORNER, SHOOT, SECOND_PATH, DONE }
 
@@ -33,14 +35,11 @@ public final class RedFourBallCommandAuto extends LinearOpMode {
     private static final long SHOOT_TOTAL_TIMEOUT_MS = 13_000;
     private static final long SECOND_PATH_TIMEOUT_MS = 7_000;
     private static final long AUTO_STOP_MS = 30_000;
-    private static final long AIM_STABLE_MS = 200;
     private static final long PINPOINT_READY_WAIT_MS = 5_000;
     private static final double CORNER_TARGET_TOLERANCE_INCHES = 2.5;
     private static final double MAX_CORNER_ERROR_INCHES = 10.0;
-    private static final String BUILD_TAG = "corner-v8-shared-shoot-command";
+    private static final String BUILD_TAG = "corner-v9-shared-auto-aim";
     private static final double FRONT_HEADING_DEGREES = 270.0;
-    // Intake defines the front; the shooter and Limelight face the rear.
-    private static final double SHOOTER_YAW_FROM_FRONT_DEGREES = 180.0;
     private static final double ROBOT_WIDTH_MM = 423.0;
     private static final double ROBOT_LENGTH_MM = 368.0;
     private static final double GRID_LINE_X_PEDRO_INCHES = 48.0;
@@ -65,19 +64,20 @@ public final class RedFourBallCommandAuto extends LinearOpMode {
 
     // The robot has no ball-exit counter. Tune this from a filmed four-preload test.
     public static long feedDurationMs = 2_000;
+    public static boolean waitForHigh = false;
 
     private CommandScheduler scheduler;
-    private ShootCommand shootCommand;
+    private AutoShootCommand shootCommand;
+    private Vision vision;
+    private AutoHiveTarget target;
     private Follower follower;
     private Shooter shooter;
     private Intake intake;
     private Transit transit;
     private GoBildaPinpointDriver pinpoint;
     private Stage stage = Stage.FIRST_PATH;
-    private Pose shootHoldPose;
     private long autoStartedNanos;
     private long stageStartedNanos;
-    private long aimStableSinceNanos = -1;
     private String status = "INIT";
 
     @Override
@@ -105,6 +105,8 @@ public final class RedFourBallCommandAuto extends LinearOpMode {
             shooter = new Shooter(hardwareMap);
             intake = new Intake(hardwareMap);
             transit = new Transit(hardwareMap);
+            vision = new Vision(hardwareMap, Alliance.RED);
+            target = new AutoHiveTarget(vision, CellCluster.RED_OPPOSITE_AUDIENCE);
             pinpoint = hardwareMap.get(GoBildaPinpointDriver.class,
                     Constants.localizerConfig.name.get());
             follower.setPose(start);
@@ -117,7 +119,8 @@ public final class RedFourBallCommandAuto extends LinearOpMode {
             }
             waitForStart();
             if (isStopRequested()) return;
-            long pinpointWaitStartedNanos = System.nanoTime();
+            autoStartedNanos = System.nanoTime();
+            long pinpointWaitStartedNanos = autoStartedNanos;
             while (opModeIsActive() && !pinpointReady()
                     && elapsedMs(pinpointWaitStartedNanos) < PINPOINT_READY_WAIT_MS) {
                 follower.update();
@@ -131,19 +134,22 @@ public final class RedFourBallCommandAuto extends LinearOpMode {
                 finish("Pinpoint not READY: " + pinpoint.getDeviceStatus());
             } else {
                 follower.setPose(start);
-                autoStartedNanos = System.nanoTime();
                 beginFirstPath();
             }
             while (opModeIsActive()) {
                 if (stage != Stage.DONE) {
                     follower.update();
-                    scheduler.run();
                     if (!pinpointReady()) {
                         finish("Pinpoint lost READY: " + pinpoint.getDeviceStatus());
                     } else if (elapsedMs(autoStartedNanos) >= AUTO_STOP_MS
                             || !finitePose(follower.pose())) {
                         finish("Stopped: invalid pose or AUTO timeout");
                     } else {
+                        if (stage == Stage.FIRST_PATH || stage == Stage.SETTLE_AT_CORNER) {
+                            target.update(follower.pose());
+                            shooter.setDistanceTarget(target.getDistanceCm());
+                        }
+                        scheduler.run();
                         advance();
                     }
                 }
@@ -164,6 +170,7 @@ public final class RedFourBallCommandAuto extends LinearOpMode {
             scheduler.cancelAll();
             stopMechanisms();
             stopFollower();
+            if (vision != null) vision.stop();
             scheduler.reset();
         }
     }
@@ -190,11 +197,9 @@ public final class RedFourBallCommandAuto extends LinearOpMode {
                 double error = cornerErrorInches();
                 if (error <= CORNER_TARGET_TOLERANCE_INCHES
                         || elapsedMs(stageStartedNanos) >= CORNER_SETTLE_TIMEOUT_MS) {
-                    if (error > MAX_CORNER_ERROR_INCHES) {
-                        finish("Corner error " + roundedTenth(error) + " in; stopped");
+                    if (error > CORNER_TARGET_TOLERANCE_INCHES) {
+                        finish("Corner did not settle: " + roundedTenth(error) + " in; stopped");
                     } else {
-                        // Shoot from the measured pose even if the correction
-                        // stops slightly short of the visualizer waypoint.
                         prepareShot();
                     }
                 }
@@ -220,22 +225,16 @@ public final class RedFourBallCommandAuto extends LinearOpMode {
 
     private void shootAtCorner() {
         if (scheduler.isScheduled(shootCommand)) {
-            Transit.FiringState firing = shootCommand.getFiringState();
-            if ((firing == Transit.FiringState.REVERSING || firing == Transit.FiringState.FEEDING)
-                    && !aimWithinTolerance()) {
-                finish("Aim drifted during shot");
-            } else {
-                status = "ShootCommand: " + firing;
-            }
+            status = shootCommand.getStatus();
             return;
         }
         if (shootCommand.getResult() != ShootCommand.Result.SUCCEEDED) {
-            finish("ShootCommand ended: " + shootCommand.getResult());
+            finish(shootCommand.getStatus() + " (" + shootCommand.getResult() + ")");
             return;
         }
-        follower.stop();
+        // AutoShootCommand.end() has released Pedro and stopped all mechanisms.
         Pose actual = follower.pose();
-        double shotHeading = Math.toDegrees(shootHoldPose.heading());
+        double shotHeading = Math.toDegrees(actual.heading());
         Pose strafeStart = poseFactory.of(actual.x(), actual.y(), shotHeading);
         Pose strafeEnd = poseFactory.of(secondPoint.x(), secondPoint.y(), shotHeading);
         Path path2 = line(strafeStart, strafeEnd).linear(strafeStart, strafeEnd);
@@ -243,44 +242,17 @@ public final class RedFourBallCommandAuto extends LinearOpMode {
         enter(Stage.SECOND_PATH, "Strafing left along second path");
     }
 
-    private boolean aimStable() {
-        if (!aimWithinTolerance()) {
-            aimStableSinceNanos = -1;
-            return false;
-        }
-        if (aimStableSinceNanos < 0) aimStableSinceNanos = System.nanoTime();
-        return elapsedMs(aimStableSinceNanos) >= AIM_STABLE_MS;
-    }
-
-    private boolean aimWithinTolerance() {
-        Pose actual = follower.pose();
-        return Math.hypot(actual.x() - shootHoldPose.x(),
-                actual.y() - shootHoldPose.y()) <= 1.5
-                && aimHeadingErrorDegrees() <= 3.0;
-    }
-
     private void prepareShot() {
-        Pose actual = follower.pose();
-        // Turn the rear-mounted shooter toward the red target from the measured pose.
-        shootHoldPose = poseFactory.of(actual.x(), actual.y(), shotHeadingDegrees(actual));
-        aimStableSinceNanos = -1;
-        follower.hold(shootHoldPose);
-        // This command owns only the three shooting mechanisms. Pedro retains
-        // the drivetrain and Pinpoint throughout the entire routine.
-        shootCommand = new ShootCommand(shooter, intake, transit,
-                this::shotDistanceCm, this::aimStable, feedDurationMs, SHOOT_TOTAL_TIMEOUT_MS);
-        enter(Stage.SHOOT, "Aiming rear shooter; running shared ShootCommand");
+        shootCommand = new AutoShootCommand(follower, shooter, intake, transit, target,
+                this::pinpointReady, feedDurationMs, SHOOT_TOTAL_TIMEOUT_MS, waitForHigh);
+        enter(Stage.SHOOT, "Stationary aim with shared ShootCommand");
+        // Initialization stops path/hold output before the aiming controller takes over.
         scheduler.schedule(shootCommand);
     }
 
     private double cornerErrorInches() {
         Pose actual = follower.pose();
         return Math.hypot(actual.x() - firstCorner.x(), actual.y() - firstCorner.y());
-    }
-
-    private double aimHeadingErrorDegrees() {
-        return Math.abs(Math.toDegrees(Math.IEEEremainder(
-                follower.pose().heading() - shootHoldPose.heading(), 2.0 * Math.PI)));
     }
 
     private static double roundedTenth(double value) {
@@ -301,26 +273,6 @@ public final class RedFourBallCommandAuto extends LinearOpMode {
     /** Pedro takes a lower-left origin; this test defines its waypoints from center. */
     private Pose fieldPose(double x, double y, double headingDegrees) {
         return poseFactory.of(x + 72.0, y + 72.0, headingDegrees);
-    }
-
-    private double shotHeadingDegrees(Pose shotPose) {
-        double[] target = VisionConstants.cellTargetFieldXYInches[
-                CellCluster.RED_OPPOSITE_AUDIENCE.getTuningIndex()];
-        double targetBearing = Math.toDegrees(Math.atan2(
-                target[1] - (shotPose.y() - 72.0),
-                target[0] - (shotPose.x() - 72.0)));
-        double chassisHeading = targetBearing - SHOOTER_YAW_FROM_FRONT_DEGREES;
-        return ((chassisHeading % 360.0) + 360.0) % 360.0;
-    }
-
-    private double shotDistanceCm() {
-        Pose shotPose = shootHoldPose == null ? firstCorner : shootHoldPose;
-        // Match the CELL-opening distance used by the shared Shooter calibration.
-        double[] target = VisionConstants.cellTargetFieldXYInches[
-                CellCluster.RED_OPPOSITE_AUDIENCE.getTuningIndex()];
-        return DistanceUnit.INCH.toCm(Math.hypot(
-                target[0] - (shotPose.x() - 72.0),
-                target[1] - (shotPose.y() - 72.0)));
     }
 
     private boolean pinpointReady() {
@@ -378,8 +330,10 @@ public final class RedFourBallCommandAuto extends LinearOpMode {
                     pose.x() - 72.0, pose.y() - 72.0,
                     Math.toDegrees(pose.heading()));
             telemetry.addData("Corner error", "%.2f in", cornerErrorInches());
-            if (shootHoldPose != null) {
-                telemetry.addData("Aim heading error", "%.1f deg", aimHeadingErrorDegrees());
+            if (shootCommand != null) {
+                telemetry.addData("Aim yaw / position error", "%.1f deg / %.2f in",
+                        shootCommand.getYawErrorDegrees(), shootCommand.getPositionErrorInches());
+                telemetry.addData("Shot result", shootCommand.getResult());
             }
         }
         if (shooter != null && transit != null) {
@@ -392,7 +346,7 @@ public final class RedFourBallCommandAuto extends LinearOpMode {
             telemetry.addData("Transit power / gate", "%.2f / %s",
                     transit.getRequestedPower(), transit.getState());
             telemetry.addData("Intake power", "%.2f", intake.getRequestedPower());
-            telemetry.addData("Shot distance", "%.1f cm", shotDistanceCm());
+            telemetry.addData("Shot distance", "%.1f cm", target == null ? Double.NaN : target.getDistanceCm());
             telemetry.addData("Feed duration", "%d / %d ms",
                     shootCommand == null ? 0 : shootCommand.getFeedElapsedMs(), feedDurationMs);
         }

@@ -14,24 +14,27 @@ import com.qualcomm.robotcore.eventloop.opmode.Autonomous;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.util.RobotLog;
 
-import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
 import org.firstinspires.ftc.teamcode.commands.ShootCommand;
+import org.firstinspires.ftc.teamcode.commands.AutoShootCommand;
+import org.firstinspires.ftc.teamcode.subsystems.drive.DriveConstants;
 import org.firstinspires.ftc.teamcode.pedro.Constants;
 import org.firstinspires.ftc.teamcode.subsystems.intake.Intake;
 import org.firstinspires.ftc.teamcode.subsystems.shooter.Shooter;
 import org.firstinspires.ftc.teamcode.subsystems.transit.Transit;
 import org.firstinspires.ftc.teamcode.subsystems.vision.CellCluster;
-import org.firstinspires.ftc.teamcode.subsystems.vision.VisionConstants;
+import org.firstinspires.ftc.teamcode.subsystems.vision.Alliance;
+import org.firstinspires.ftc.teamcode.subsystems.vision.AutoHiveTarget;
+import org.firstinspires.ftc.teamcode.subsystems.vision.Vision;
 
 import java.util.Locale;
 
 /** Test 2: shoot once, travel to the next waypoint, stop for 3 s, cross the field. */
 @Config
-@Autonomous(name = "Red Half Two Tip Test 2 v3", group = "Test")
+@Autonomous(name = "Red Half Route Shared Aim v4", group = "Test")
 public final class RedHalfTwoTipTest extends LinearOpMode {
     private enum Stage { INIT, PATH1, SHOOT, RESTORE_HEADING, PATH2, DWELL, PATH3, DONE }
 
-    private static final String BUILD_TAG = "red-half-two-tip-test2-v3-wall-clearance";
+    private static final String BUILD_TAG = "red-half-route-v4-shared-auto-aim";
     private static final long AUTO_TIMEOUT_MS = 30_000;
     private static final long PINPOINT_WAIT_MS = 5_000;
     private static final long SHOOT_TIMEOUT_MS = 13_000;
@@ -40,6 +43,7 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
     private static final long STABLE_MS = 200;
     private static final double ARRIVAL_TOLERANCE_INCHES = 2.5;
     public static long feedDurationMs = 2_000;
+    public static boolean waitForHigh = false;
     private static final double PATH_SPEED_FRACTION = 0.35;
     private static final double ROBOT_HALF_WIDTH_INCHES = 423.0 / (2.0 * 25.4);
     private static final double ROBOT_HALF_LENGTH_INCHES = 368.0 / (2.0 * 25.4);
@@ -64,8 +68,9 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
     private Intake intake;
     private Transit transit;
     private GoBildaPinpointDriver pinpoint;
-    private ShootCommand shootCommand;
-    private Pose holdPose;
+    private AutoShootCommand shootCommand;
+    private Vision vision;
+    private AutoHiveTarget target;
     private Pose legStartPose;
     private Pose targetPose;
     private Stage stage = Stage.INIT;
@@ -86,6 +91,8 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
             shooter = new Shooter(hardwareMap);
             intake = new Intake(hardwareMap);
             transit = new Transit(hardwareMap);
+            vision = new Vision(hardwareMap, Alliance.RED);
+            target = new AutoHiveTarget(vision, CellCluster.RED_OPPOSITE_AUDIENCE);
             pinpoint = hardwareMap.get(GoBildaPinpointDriver.class, Constants.localizerConfig.name.get());
             follower.setPose(start);
             while (opModeInInit() && !isStopRequested()) {
@@ -115,12 +122,16 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
             while (opModeIsActive()) {
                 if (stage != Stage.DONE) {
                     follower.update();
-                    scheduler.run();
                     if (!pinpointReady() || !finitePose(follower.pose())) {
                         finish("Stopped: invalid pose or Pinpoint " + pinpoint.getDeviceStatus());
                     } else if (elapsedMs(autoStartedNanos) >= AUTO_TIMEOUT_MS) {
                         finish("30-second test timeout");
                     } else if (checkTravelDirection()) {
+                        if (stage == Stage.PATH1) {
+                            target.update(follower.pose());
+                            shooter.setDistanceTarget(target.getDistanceCm());
+                        }
+                        scheduler.run();
                         advance();
                     }
                 }
@@ -140,6 +151,7 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
             recordRunSummary();
             scheduler.cancelAll();
             stopAll();
+            if (vision != null) vision.stop();
             scheduler.reset();
         }
     }
@@ -180,38 +192,24 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
     }
 
     private void beginShot() {
-        Pose actual = follower.pose();
-        double[] target = VisionConstants.cellTargetFieldXYInches[
-                CellCluster.RED_OPPOSITE_AUDIENCE.getTuningIndex()];
-        double bearing = Math.toDegrees(Math.atan2(target[1] - (actual.y() - 72.0),
-                target[0] - (actual.x() - 72.0)));
-        // The shooter faces the rear, in the same direction as the Limelight.
-        double chassisHeading = ((bearing - 180.0) % 360.0 + 360.0) % 360.0;
-        holdPose = poses.of(actual.x(), actual.y(), chassisHeading);
-        targetPose = holdPose;
-        follower.hold(holdPose);
-        enter(Stage.SHOOT, "Turning rear shooter to red target and firing preloads");
-        shootCommand = new ShootCommand(shooter, intake, transit,
-                this::shotDistanceCm, () -> holdStable(holdPose, 1.5),
-                feedDurationMs, SHOOT_TIMEOUT_MS);
+        targetPose = null; // Aiming now follows the current target, not a fixed Pedro hold heading.
+        shootCommand = new AutoShootCommand(follower, shooter, intake, transit, target,
+                this::pinpointReady, feedDurationMs, SHOOT_TIMEOUT_MS, waitForHigh);
+        enter(Stage.SHOOT, "Stationary aim with shared ShootCommand");
         scheduler.schedule(shootCommand);
     }
 
     private void advanceShot() {
         if (scheduler.isScheduled(shootCommand)) {
-            Transit.FiringState firing = shootCommand.getFiringState();
-            if ((firing == Transit.FiringState.REVERSING || firing == Transit.FiringState.FEEDING)
-                    && !atPose(holdPose, 1.5)) {
-                finish("Aim drifted during shot");
-            }
+            status = shootCommand.getStatus();
             return;
         }
         if (shootCommand.getResult() != ShootCommand.Result.SUCCEEDED) {
-            finish("ShootCommand ended: " + shootCommand.getResult());
+            finish(shootCommand.getStatus() + " (" + shootCommand.getResult() + ")");
             return;
         }
-        // ShootCommand.end() has stopped all mechanisms. Restore the exported
-        // path2 start pose before following its constant 270-degree heading.
+        // The shot has released Pedro and stopped all mechanisms. Restore the
+        // exported path2 start pose before its constant 270-degree heading.
         targetPose = firstShot;
         follower.hold(firstShot);
         enter(Stage.RESTORE_HEADING, "Restoring path 2 start heading to 270 deg");
@@ -229,7 +227,9 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
     }
 
     private boolean holdStable(Pose target, double positionTolerance) {
-        if (!atPose(target, positionTolerance)) {
+        if (!atPose(target, positionTolerance) || follower.velocity() == null
+                || !Double.isFinite(follower.velocity().linSpeed())
+                || follower.velocity().linSpeed() > DriveConstants.positionLockMaxSpeedInchesPerSecond) {
             stableSinceNanos = -1;
             return false;
         }
@@ -245,14 +245,6 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
 
     private double distanceTo(Pose target) {
         return Math.hypot(follower.pose().x() - target.x(), follower.pose().y() - target.y());
-    }
-
-    private double shotDistanceCm() {
-        // Match the CELL-opening distance used by the shared Shooter calibration.
-        double[] target = VisionConstants.cellTargetFieldXYInches[
-                CellCluster.RED_OPPOSITE_AUDIENCE.getTuningIndex()];
-        return DistanceUnit.INCH.toCm(Math.hypot(target[0] - (holdPose.x() - 72.0),
-                target[1] - (holdPose.y() - 72.0)));
     }
 
     private void follow(Path path, Stage next, String message) {
@@ -371,6 +363,9 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
         if (shootCommand != null) {
             telemetry.addData("Shot result / feed", "%s / %d ms",
                     shootCommand.getResult(), shootCommand.getFeedElapsedMs());
+            telemetry.addData("Shot status", shootCommand.getStatus());
+            telemetry.addData("Aim yaw / position error", "%.1f deg / %.2f in",
+                    shootCommand.getYawErrorDegrees(), shootCommand.getPositionErrorInches());
         }
         if (stage == Stage.DWELL) {
             telemetry.addData("Wait remaining", "%.1f s",

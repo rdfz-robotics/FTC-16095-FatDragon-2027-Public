@@ -182,6 +182,7 @@ public class TestAutoCheck {
             requested = intake;
             shooting = shoot;
         }
+        @Override public void setReverseRequested(boolean reverse) { }
         @Override public void clearBallCount() { clears++; }
         @Override public void stop() { requested = false; shooting = false; }
         @Override public void periodic() { }
@@ -375,7 +376,42 @@ public class TestAutoCheck {
                 "cancellation stops feeding and intake");
         scheduler.reset();
         checkAutoShoot();
+        checkShotFailureSkipsLaterPaths();
         System.out.println("PASS TestAutoCheck: " + checks + " checks; real scheduler and transit timers");
+    }
+
+    private static void checkShotFailureSkipsLaterPaths() throws Exception {
+        Paths paths = new Paths();
+        Collector intake = (Collector) ALLOCATOR.allocateInstance(Collector.class);
+        Flywheels shooter = (Flywheels) ALLOCATOR.allocateInstance(Flywheels.class);
+        Transit transit = transit();
+        AutoHiveTarget target = new AutoHiveTarget(vision(), CellCluster.RED_OPPOSITE_AUDIENCE);
+        Test auto = auto(paths, intake, shooter, transit, target);
+        CommandScheduler.getInstance().reset();
+        CommandScheduler scheduler = CommandScheduler.getInstance();
+        scheduler.registerSubsystem(transit);
+        Command routine = auto.autoRoutine();
+        scheduler.schedule(routine);
+        scheduler.run();
+        check(paths.seen.size() == 1, "legacy routine starts its first path");
+        paths.finish();
+        scheduler.run();
+        Field active = Test.class.getDeclaredField("activeShot");
+        active.setAccessible(true);
+        AutoShootCommand shot = (AutoShootCommand) active.get(auto);
+        check(shot != null, "legacy routine reached the first composed shot");
+        Field child = AutoShootCommand.class.getDeclaredField("shooting");
+        child.setAccessible(true);
+        set(child.get(shot), org.firstinspires.ftc.teamcode.commands.ShootCommand.class,
+                "startedNanos", System.nanoTime() - 6_000_000_000L);
+        for (int i = 0; i < 20 && scheduler.isScheduled(routine); i++) scheduler.run();
+        check(!scheduler.isScheduled(routine) && paths.seen.size() == 1,
+                "a failed shot skips every later legacy path");
+        check(!intake.requested && !intake.shooting && !shooter.targetSet
+                        && transit.getState() == Transit.TransitState.CLOSE,
+                "failed routine never starts subsequent intake or shooting");
+        scheduler.cancelAll();
+        scheduler.reset();
     }
 
     private static void checkAutoShoot() throws Exception {
@@ -404,6 +440,8 @@ public class TestAutoCheck {
             paths.current = new Pose(paths.current.x(), paths.current.y(),
                     paths.current.heading() - Math.toRadians(10));
             shot.execute();
+            set(shot, AutoShootCommand.class, "stationarySinceNanos", System.nanoTime() - 300_000_000L);
+            shot.execute();
             check(transit.getState() == Transit.TransitState.CLOSE, "unlocked aim blocks feeding");
             Motors motors = (Motors) paths.drivetrain;
             check(motors.powers.turn() > 0, "positive yaw error gives Pedro CCW power");
@@ -424,10 +462,10 @@ public class TestAutoCheck {
             check(transit.getFiringState() == Transit.FiringState.FEEDING && intake.shooting,
                     "ready shot uses both TeleOp feed outputs");
             shooter.ready = false;
-            paths.current = new Pose(paths.current.x(), paths.current.y(), paths.current.heading() + .2);
+            paths.current = new Pose(paths.current.x(), paths.current.y(), paths.current.heading() + Math.toRadians(1));
             shot.execute();
             check(transit.getFiringState() == Transit.FiringState.FEEDING,
-                    "committed feed survives temporary speed and aim changes like TeleOp");
+                    "committed feed survives flywheel speed changes and small aim changes");
             located[0] = false;
             shot.execute();
             check(transit.getState() == Transit.TransitState.CLOSE && !intake.shooting
@@ -442,7 +480,11 @@ public class TestAutoCheck {
             paths.current = new Pose(Double.NaN, 0, 0);
             shot.execute();
             check(!shooter.targetSet && motors.stopped, "non-finite pose cannot keep a shot running");
-            set(shot, AutoShootCommand.class, "startedNanos", System.nanoTime() - 5_100_000_000L);
+            Field childField = AutoShootCommand.class.getDeclaredField("shooting");
+            childField.setAccessible(true);
+            set(childField.get(shot), org.firstinspires.ftc.teamcode.commands.ShootCommand.class,
+                    "startedNanos", System.nanoTime() - 5_100_000_000L);
+            shot.execute();
             check(shot.isFinished() && shot.hasTimedOut(), "total timeout includes readiness waiting");
             shot.end(false);
             check(shot.getStatus().equals("Shot timed out"), "timeout is distinguishable from completion");
@@ -453,7 +495,9 @@ public class TestAutoCheck {
             shot.initialize();
             check(!shot.hasTimedOut() && !shot.isFinished(), "rescheduling resets both shot timers");
             shot.execute();
-            paths.current = new Pose(paths.current.x() + 3, paths.current.y() + 2,
+            set(shot, AutoShootCommand.class, "stationarySinceNanos", System.nanoTime() - 300_000_000L);
+            shot.execute();
+            paths.current = new Pose(paths.current.x() + 1, paths.current.y() + 1,
                     paths.current.heading());
             shot.execute();
             double fieldX = motors.powers.forward() * Math.cos(paths.current.heading())

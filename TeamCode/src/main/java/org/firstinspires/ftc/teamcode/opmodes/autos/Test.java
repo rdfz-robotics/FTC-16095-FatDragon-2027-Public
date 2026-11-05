@@ -5,6 +5,7 @@ import static com.pedropathing.api.Paths.line;
 
 import com.arcrobotics.ftclib.command.Command;
 import com.arcrobotics.ftclib.command.CommandScheduler;
+import com.arcrobotics.ftclib.command.ConditionalCommand;
 import com.arcrobotics.ftclib.command.FunctionalCommand;
 import com.arcrobotics.ftclib.command.InstantCommand;
 import com.arcrobotics.ftclib.command.ParallelDeadlineGroup;
@@ -19,6 +20,7 @@ import com.qualcomm.robotcore.eventloop.opmode.Autonomous;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 
 import org.firstinspires.ftc.teamcode.commands.AutoShootCommand;
+import org.firstinspires.ftc.teamcode.commands.ShootCommand;
 import org.firstinspires.ftc.teamcode.pedro.Constants;
 import org.firstinspires.ftc.teamcode.subsystems.intake.Intake;
 import org.firstinspires.ftc.teamcode.subsystems.shooter.Shooter;
@@ -38,6 +40,7 @@ public class Test extends LinearOpMode {
     private AutoHiveTarget target;
     private GoBildaPinpointDriver pinpoint;
     private AutoShootCommand activeShot;
+    private boolean shotFailed;
     private static final long SHOT_TIMEOUT_MS = 5000;
     private String stage = "INIT";
 
@@ -58,7 +61,7 @@ public class Test extends LinearOpMode {
     private final Pose point7Control1 = poseFactory.of(18.8328, 61.2259, 0);
 
     public Command autoRoutine() {
-        return new SequentialCommandGroup(
+        Command[] steps = {
                 followPath(1, path1()),
                 shootFor(900, false),
                 intakeDuringPath(2, path2(), 500),
@@ -68,7 +71,14 @@ public class Test extends LinearOpMode {
                 intakeDuringPath(5, path5(), 0),
                 followPath(6, path6()),
                 shootFor(900, false),
-                followPath(7, path7()));
+                followPath(7, path7())};
+        SequentialCommandGroup routine = new SequentialCommandGroup(
+                new InstantCommand(() -> shotFailed = false));
+        for (Command step : steps) {
+            // Skip every later action after a failed shot, including intake and preheat.
+            routine.addCommands(new ConditionalCommand(step, new InstantCommand(), () -> !shotFailed));
+        }
+        return routine;
     }
 
     @Override
@@ -98,7 +108,7 @@ public class Test extends LinearOpMode {
             follower.update();
             scheduler.addButton(() -> {
                 target.update(follower.pose());
-                if (isStarted() && !isStopRequested() && activeShot == null) {
+                if (isStarted() && !isStopRequested() && activeShot == null && !shotFailed) {
                     shooter.setDistanceTarget(target.getDistanceCm());
                 }
             });
@@ -119,11 +129,13 @@ public class Test extends LinearOpMode {
 
             follower.setPose(start);
             Command routine = autoRoutine();
+            long startedNanos = System.nanoTime();
             scheduler.schedule(routine);
             while (opModeIsActive() && scheduler.isScheduled(routine)) {
                 follower.update();
-                if (pinpoint.getDeviceStatus() != GoBildaPinpointDriver.DeviceStatus.READY) {
-                    stage = "Stopped: Pinpoint is not READY";
+                if (pinpoint.getDeviceStatus() != GoBildaPinpointDriver.DeviceStatus.READY
+                        || (System.nanoTime() - startedNanos) / 1_000_000L >= 30_000) {
+                    stage = "Stopped: Pinpoint lost READY or 30-second timeout";
                     showTelemetry();
                     break;
                 }
@@ -198,6 +210,7 @@ public class Test extends LinearOpMode {
             public void end(boolean interrupted) {
                 super.end(interrupted);
                 stage = getStatus();
+                shotFailed = getResult() != ShootCommand.Result.SUCCEEDED;
                 activeShot = null;
             }
         };
