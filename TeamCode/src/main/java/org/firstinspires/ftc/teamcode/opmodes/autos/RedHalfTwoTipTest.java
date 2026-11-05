@@ -25,26 +25,28 @@ import org.firstinspires.ftc.teamcode.subsystems.vision.CellCluster;
 import org.firstinspires.ftc.teamcode.subsystems.vision.VisionConstants;
 
 import java.util.Locale;
+import java.util.Map;
 
 /** Test 2: shoot once, travel to the next waypoint, stop for 3 s, cross the field. */
 @Config
-@Autonomous(name = "Red Half Two Tip Test 2 v4", group = "Test")
+@Autonomous(name = "Red Half Two Tip Test 2 v5", group = "Test")
 public final class RedHalfTwoTipTest extends LinearOpMode {
     private enum Stage { INIT, PATH1, SHOOT, RESTORE_HEADING, PATH2, DWELL, PATH3, DONE }
 
-    private static final String BUILD_TAG = "red-half-two-tip-test2-v4-exact-route";
+    private static final String BUILD_TAG = "red-half-two-tip-test2-v5-exact-route";
     private static final long AUTO_TIMEOUT_MS = 30_000;
     private static final long PINPOINT_WAIT_MS = 5_000;
+    private static final long START_POSE_TIMEOUT_MS = 1_500;
     private static final long SHOOT_TIMEOUT_MS = 13_000;
     private static final long RESTORE_TIMEOUT_MS = 5_000;
     private static final long DWELL_MS = 3_000;
     private static final long STABLE_MS = 200;
     private static final double ARRIVAL_TOLERANCE_INCHES = 2.5;
+    private static final double PATH1_LATERAL_TOLERANCE_INCHES = 3.0;
     public static long feedDurationMs = 2_000;
     private static final double PATH_SPEED_FRACTION = 0.35;
     private static final double ROBOT_HALF_WIDTH_INCHES = 423.0 / (2.0 * 25.4);
     private static final double ROBOT_HALF_LENGTH_INCHES = 368.0 / (2.0 * 25.4);
-    // The requested curve has approximately 1.54 in nominal body clearance.
     private static final double MIN_LEFT_CLEARANCE_INCHES = 0.5;
     private static final double LEFT_CLEARANCE_WARNING_INCHES = 4.0;
     private static String previousRun = "No previous test in this Robot Controller session";
@@ -57,8 +59,8 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
     private final Pose point2Start = poses.of(53.8928, 31.5834, 270);
     private final Pose dwellPoint = poses.of(15.1483, 11.4183, 270);
     private final Pose point3Start = poses.of(15.1483, 11.4183, 270);
-    private final Pose oppositePoint = poses.of(57.3285, 128.6085, 90);
-    private final Pose crossingControl = poses.of(1.7328, 77.1069, 0);
+    private final Pose oppositePoint = poses.of(53.8397, 118.2516, 90);
+    private final Pose crossingControl = poses.of(14.6931, 95.546, 0);
 
     private CommandScheduler scheduler;
     private Follower follower;
@@ -75,6 +77,9 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
     private long autoStartedNanos;
     private long stageStartedNanos;
     private long stableSinceNanos = -1;
+    private long previousLoopNanos;
+    private double maxLoopMs;
+    private String firstDriveCommand;
 
     @Override
     public void runOpMode() throws InterruptedException {
@@ -87,7 +92,8 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
             follower = Constants.create(hardwareMap);
             shooter = new Shooter(hardwareMap, ShooterConstants.leftShooterDirection.inverted(),
                     ShooterConstants.rightShooterDirection.inverted());
-            intake = new Intake(hardwareMap);
+            // This test only feeds preloads. Avoid polling the faulty cds sensor.
+            intake = new Intake(hardwareMap, false);
             transit = new Transit(hardwareMap);
             pinpoint = hardwareMap.get(GoBildaPinpointDriver.class, Constants.localizerConfig.name.get());
             follower.setPose(start);
@@ -111,13 +117,18 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
             if (isStopRequested()) return;
             if (!pinpointReady()) {
                 finish("Pinpoint not READY: " + pinpoint.getDeviceStatus());
-            } else {
-                follower.setPose(start);
+            } else if (confirmStartPose()) {
                 follow(path1(), Stage.PATH1, "First path to shooting waypoint");
             }
             while (opModeIsActive()) {
                 if (stage != Stage.DONE) {
+                    long now = System.nanoTime();
+                    if (previousLoopNanos != 0) {
+                        maxLoopMs = Math.max(maxLoopMs, (now - previousLoopNanos) / 1_000_000.0);
+                    }
+                    previousLoopNanos = now;
                     follower.update();
+                    if (stage == Stage.PATH1 && firstDriveCommand == null) recordFirstDriveCommand();
                     if (!pinpointReady() || !finitePose(follower.pose())) {
                         finish("Stopped: invalid pose or Pinpoint " + pinpoint.getDeviceStatus());
                     } else if (elapsedMs(autoStartedNanos) >= AUTO_TIMEOUT_MS) {
@@ -147,6 +158,26 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
             scheduler.reset();
             recordRunSummary();
         }
+    }
+
+    private boolean confirmStartPose() {
+        stopFollower();
+        follower.setPose(start);
+        stableSinceNanos = -1;
+        long startedNanos = System.nanoTime();
+        status = "Checking start pose readback; keep robot still";
+        while (opModeIsActive() && elapsedMs(startedNanos) < START_POSE_TIMEOUT_MS) {
+            follower.update();
+            scheduler.run();
+            if (pinpointReady() && finitePose(follower.pose()) && holdStable(start, 0.5)) {
+                return true;
+            }
+            if (!pinpointReady() || !finitePose(follower.pose())) stableSinceNanos = -1;
+            showTelemetry();
+            idle();
+        }
+        finish("Start pose readback failed; expected 53.9942 / 7.9225 / 90 deg");
+        return false;
     }
 
     private void advance() {
@@ -274,15 +305,33 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
         if (legStartPose == null) return true;
         double dx = follower.pose().x() - legStartPose.x();
         double dy = follower.pose().y() - legStartPose.y();
-        if (stage == Stage.PATH1 && (Math.abs(dx) > 3.0 || dy < -2.0)) {
-            finish("PATH1 wrong movement: expect +Y, nearly fixed X; check placement/localizer");
-            return false;
+        if (stage == Stage.PATH1) {
+            if (dy < -2.0) {
+                finish("PATH1 moved backward; check placement/localizer");
+                return false;
+            }
+            double lateralError = path1LateralError();
+            // Rotation was reported as translation during the physical test.
+            // Stop on excessive deviation until the localizer is verified.
+            if (lateralError > PATH1_LATERAL_TOLERANCE_INCHES) {
+                finish(String.format(Locale.US, "PATH1 lateral deviation %.2f in; run Pinpoint Pose Test",
+                        lateralError));
+                return false;
+            }
         }
         if (stage == Stage.PATH2 && (dx > 2.0 || dy > 2.0)) {
             finish("PATH2 wrong movement: expect -X and -Y; check localizer/drivetrain");
             return false;
         }
         return true;
+    }
+
+    private double path1LateralError() {
+        double pathX = firstShot.x() - start.x();
+        double pathY = firstShot.y() - start.y();
+        Pose actual = follower.pose();
+        return Math.abs(pathY * (actual.x() - start.x()) - pathX * (actual.y() - start.y()))
+                / Math.hypot(pathX, pathY);
     }
 
     private double leftWallClearanceInches() {
@@ -296,8 +345,17 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
         Pose p = follower == null ? null : follower.pose();
         String poseText = finitePose(p) ? String.format(Locale.US, "Pedro %.2f, %.2f, %.1f deg",
                 p.x(), p.y(), Math.toDegrees(p.heading())) : "pose unavailable";
-        previousRun = stage + " | " + status + " | " + poseText;
+        previousRun = stage + " | " + status + " | " + poseText
+                + " | first drive " + firstDriveCommand
+                + String.format(Locale.US, " | max loop %.0f ms", maxLoopMs);
         RobotLog.ii("RedHalfTwoTipTest", previousRun);
+    }
+
+    private void recordFirstDriveCommand() {
+        Map<String, Object> drive = follower.drivetrain.debug();
+        firstDriveCommand = String.format(Locale.US, "F/S/T %.3f / %.3f / %.3f",
+                drive.get("forward"), drive.get("strafe"), drive.get("turn"));
+        RobotLog.ii("RedHalfTwoTipTest", "First drive " + drive);
     }
 
     private void enter(Stage next, String message) {
@@ -360,6 +418,9 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
         if (stage == Stage.INIT) telemetry.addData("Previous run", previousRun);
         telemetry.addData("Stage", stage);
         telemetry.addData("Status", status);
+        telemetry.addData("Ball counting", "Disabled for preload-only test");
+        telemetry.addData("Max loop", "%.0f ms", maxLoopMs);
+        if (firstDriveCommand != null) telemetry.addData("First drive", firstDriveCommand);
         if (pinpoint != null) telemetry.addData("Pinpoint", pinpoint.getDeviceStatus());
         if (follower != null && finitePose(follower.pose())) {
             Pose p = follower.pose();
@@ -374,6 +435,9 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
             if (legStartPose != null) {
                 telemetry.addData("Path displacement X/Y", "%.2f / %.2f in",
                         p.x() - legStartPose.x(), p.y() - legStartPose.y());
+            }
+            if (stage == Stage.PATH1) {
+                telemetry.addData("Path 1 lateral error", "%.2f in", path1LateralError());
             }
             if (targetPose != null) {
                 telemetry.addData("Target Pedro X/Y/H", "%.2f / %.2f / %.1f deg",

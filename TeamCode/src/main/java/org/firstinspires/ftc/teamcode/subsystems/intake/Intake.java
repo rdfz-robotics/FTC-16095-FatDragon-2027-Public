@@ -31,8 +31,14 @@ public class Intake extends SubsystemBase {
     }
 
     public Intake(HardwareMap hardwareMap) {
+        this(hardwareMap, true);
+    }
+
+    /** Timed preload tests can disable the distance sensor and automatic ball counting. */
+    public Intake(HardwareMap hardwareMap, boolean ballCountingEnabled) {
         intakeMotor = hardwareMap.get(DcMotor.class, IntakeConstants.intakeMotorName);
-        colorDistanceSensor = hardwareMap.get(DistanceSensor.class, IntakeConstants.colorSensorName);
+        colorDistanceSensor = ballCountingEnabled
+                ? hardwareMap.get(DistanceSensor.class, IntakeConstants.colorSensorName) : null;
         leftFlowerServo = hardwareMap.get(Servo.class, IntakeConstants.leftFlowerServoName);
         rightFlowerServo = hardwareMap.get(Servo.class, IntakeConstants.rightFlowerServoName);
         intakeMotor.setDirection(IntakeConstants.intakeMotorDirection);
@@ -127,22 +133,24 @@ public class Intake extends SubsystemBase {
 
     @Override
     public void periodic() {
-        distanceCm = colorDistanceSensor.getDistance(DistanceUnit.CM);
-        boolean validDistance = Double.isFinite(distanceCm) && distanceCm >= 0.0;
-        if (validDistance) {
-            if (distanceCm <= IntakeConstants.ballEnterDistanceCm) {
-                ballPresent = true;
-            } else if (ballPresent && distanceCm >= IntakeConstants.ballExitDistanceCm) {
-                ballPresent = false;
-                countedCurrentPresence = false;
+        if (colorDistanceSensor != null) {
+            distanceCm = colorDistanceSensor.getDistance(DistanceUnit.CM);
+            boolean validDistance = Double.isFinite(distanceCm) && distanceCm >= 0.0;
+            if (validDistance) {
+                if (distanceCm <= IntakeConstants.ballEnterDistanceCm) {
+                    ballPresent = true;
+                } else if (ballPresent && distanceCm >= IntakeConstants.ballExitDistanceCm) {
+                    ballPresent = false;
+                    countedCurrentPresence = false;
+                }
             }
-        }
-        if (validDistance && ballPresent && !countedCurrentPresence) {
-            if (ballCount >= IntakeConstants.maxBallCount) {
-                countedCurrentPresence = true;
-            } else if (requestedPower > 0.0) {
-                ballCount++;
-                countedCurrentPresence = true;
+            if (validDistance && ballPresent && !countedCurrentPresence) {
+                if (ballCount >= IntakeConstants.maxBallCount) {
+                    countedCurrentPresence = true;
+                } else if (requestedPower > 0.0) {
+                    ballCount++;
+                    countedCurrentPresence = true;
+                }
             }
         }
         updateMotorPower();
@@ -158,7 +166,8 @@ public class Intake extends SubsystemBase {
             setPower(IntakeConstants.feedPower);
         } else if (ballCount >= IntakeConstants.maxBallCount) {
             setPower(IntakeConstants.fullReversePower);
-        } else if (!Double.isFinite(distanceCm) || distanceCm < 0.0) {
+        } else if (colorDistanceSensor != null
+                && (!Double.isFinite(distanceCm) || distanceCm < 0.0)) {
             setPower(0.0);
         } else if (intakeRequested) {
             setPower(IntakeConstants.activePower);
