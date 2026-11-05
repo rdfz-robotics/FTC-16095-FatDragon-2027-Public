@@ -22,6 +22,7 @@ public class Intake extends SubsystemBase {
     private boolean reverseRequested;
     private boolean intakeRequested;
     private boolean shootRequested;
+    private boolean inputsActive;
     private FlowerState flowerState = FlowerState.RAISED;
 
     public enum FlowerState {
@@ -45,6 +46,7 @@ public class Intake extends SubsystemBase {
     }
 
     public void updateInputs(boolean intakeRequested, boolean jamRequested, boolean shootRequested) {
+        inputsActive = true;
         if (this.jamRequested && !jamRequested) {
             clearBallCount();
         }
@@ -65,11 +67,13 @@ public class Intake extends SubsystemBase {
     }
 
     public void suspend() {
+        inputsActive = false;
         shootRequested = false;
         setPower(0.0);
     }
 
     public void stop() {
+        inputsActive = false;
         jamRequested = false;
         reverseRequested = false;
         intakeRequested = false;
@@ -145,7 +149,10 @@ public class Intake extends SubsystemBase {
     }
 
     private void updateMotorPower() {
-        if (jamRequested || reverseRequested) {
+        // Cancellation must stay stopped across periodic() until a new owner supplies inputs.
+        if (!inputsActive) {
+            setPower(0.0);
+        } else if (jamRequested || reverseRequested) {
             setPower(IntakeConstants.jamPower);
         } else if (shootRequested) {
             setPower(IntakeConstants.feedPower);

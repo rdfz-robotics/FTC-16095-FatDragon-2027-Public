@@ -82,8 +82,6 @@ public abstract class TeleOpBase extends CommandOpMode {
         // The scheduler refreshes sensors before buttons and command execution.
         CommandScheduler.getInstance().addButton(() -> vision.updateAimTarget(
                 drive, stopLatched || gamepad1.b, aimRequested));
-        CommandScheduler.getInstance().addButton(() -> intake.setReverseRequested(
-                gamepadEx.getButton(GamepadKeys.Button.LEFT_BUMPER)));
 
         new Trigger(
                 () -> gamepadEx.getButton(GamepadKeys.Button.LEFT_STICK_BUTTON)

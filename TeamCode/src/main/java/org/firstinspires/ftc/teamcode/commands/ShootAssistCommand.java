@@ -1,6 +1,7 @@
 package org.firstinspires.ftc.teamcode.commands;
 
-import com.arcrobotics.ftclib.command.CommandBase;
+import com.arcrobotics.ftclib.command.FunctionalCommand;
+import com.arcrobotics.ftclib.command.ParallelCommandGroup;
 import com.arcrobotics.ftclib.gamepad.GamepadEx;
 import com.arcrobotics.ftclib.gamepad.GamepadKeys;
 
@@ -15,19 +16,19 @@ import org.firstinspires.ftc.teamcode.subsystems.transit.Transit;
 import org.firstinspires.ftc.teamcode.subsystems.transit.Transit.FiringState;
 import org.firstinspires.ftc.teamcode.subsystems.vision.Vision;
 
-public class ShootAssistCommand extends CommandBase {
+public class ShootAssistCommand extends ParallelCommandGroup {
     private final Drive drive;
-    private final Shooter shooter;
-    private final Intake intake;
-    private final Transit transit;
+    private final ShootCommand shooting;
     private final Vision vision;
     private final AutoAimController autoAim;
     private final PositionHoldController positionHold = new PositionHoldController();
     private final GamepadEx gamepadEx;
     private final boolean autoAimEnabled;
 
-    private boolean canPrepareToFire;
     private boolean manualTranslation;
+    private double forward;
+    private double strafe;
+    private double turnPower;
 
     public ShootAssistCommand(
             Drive drive,
@@ -52,29 +53,34 @@ public class ShootAssistCommand extends CommandBase {
             boolean autoAimEnabled
     ) {
         this.drive = drive;
-        this.shooter = shooter;
-        this.intake = intake;
-        this.transit = transit;
         this.vision = vision;
         this.autoAim = autoAim;
         this.gamepadEx = gamepadEx;
         this.autoAimEnabled = autoAimEnabled;
-        addRequirements(drive, shooter, intake, transit);
+        shooting = new ShootCommand(shooter, intake, transit,
+                () -> vision.hasValidAimingTarget() ? DistanceUnit.INCH.toCm(
+                        vision.getTagCenterHorizontalDistanceInches()) : Double.NaN,
+                () -> !autoAimEnabled || (vision.isAimCalibrationReady() && autoAim.isLocked()),
+                () -> gamepadEx.getTrigger(GamepadKeys.Trigger.LEFT_TRIGGER)
+                        > org.firstinspires.ftc.teamcode.opmodes.teleops.TeleOpConstants.triggerThreshold,
+                () -> gamepadEx.getButton(GamepadKeys.Button.RIGHT_BUMPER),
+                () -> gamepadEx.getButton(GamepadKeys.Button.LEFT_BUMPER));
+        addCommands(shooting, new FunctionalCommand(
+                () -> { }, this::applyDrivePower, interrupted -> drive.stop(), () -> false, drive));
     }
 
     @Override
     public void initialize() {
-        shooter.stop();
         autoAim.reset();
         positionHold.reset();
         manualTranslation = false;
-        resetFiringSequence(FiringState.WAITING);
+        super.initialize();
     }
 
     @Override
     public void execute() {
-        double forward = applyDeadband(gamepadEx.getLeftY());
-        double strafe = applyDeadband(gamepadEx.getLeftX());
+        forward = applyDeadband(gamepadEx.getLeftY());
+        strafe = applyDeadband(gamepadEx.getLeftX());
         manualTranslation = forward != 0.0 || strafe != 0.0;
         if (!autoAimEnabled || !vision.isAimCalibrationReady() || manualTranslation) {
             positionHold.reset();
@@ -85,14 +91,19 @@ public class ShootAssistCommand extends CommandBase {
             strafe = positionHold.getStrafePower();
         }
 
-        boolean intakeRequested = gamepadEx.getTrigger(GamepadKeys.Trigger.LEFT_TRIGGER)
-                > org.firstinspires.ftc.teamcode.opmodes.teleops.TeleOpConstants.triggerThreshold;
         boolean jamRequested = gamepadEx.getButton(GamepadKeys.Button.RIGHT_BUMPER);
-        intake.updateInputs(intakeRequested, jamRequested, true);
-        double turnPower = updateShootRequest(jamRequested);
-        if (gamepadEx.getButton(GamepadKeys.Button.LEFT_BUMPER) && !jamRequested) {
-            transit.forwardForIntakeReverse();
+        if (jamRequested) {
+            autoAim.reset();
+            turnPower = 0.0;
+        } else {
+            turnPower = autoAimEnabled ? autoAim.calculateTurnPower(
+                    vision.hasValidAimingTarget(), vision.getYawErrorDegrees()) : 0.0;
         }
+        // Compute this cycle's aim lock before either parallel child executes.
+        super.execute();
+    }
+
+    private void applyDrivePower() {
         if (autoAimEnabled && !manualTranslation) {
             drive.moveRobot(forward, strafe, turnPower);
         } else {
@@ -104,74 +115,16 @@ public class ShootAssistCommand extends CommandBase {
 
     @Override
     public void end(boolean interrupted) {
+        super.end(interrupted);
         autoAim.reset();
         positionHold.reset();
         manualTranslation = false;
-        resetFiringSequence(FiringState.IDLE);
-        shooter.stop();
-        intake.suspend();
-        drive.stop();
     }
 
-    public boolean canFire() {
-        return transit.getFiringState() == FiringState.FEEDING;
-    }
-
-    public boolean canPrepareToFire() {
-        return canPrepareToFire;
-    }
-
-    public FiringState getFiringState() {
-        return transit.getFiringState();
-    }
-
-    public boolean isManualTranslation() {
-        return manualTranslation;
-    }
-
-    private double updateShootRequest(boolean jamRequested) {
-        if (jamRequested) {
-            shooter.stop();
-            autoAim.reset();
-            resetFiringSequence(FiringState.WAITING);
-            transit.reverse();
-            return 0.0;
-        }
-
-        boolean validAimingTarget = vision.hasValidAimingTarget();
-        double autoAimTurn = 0.0;
-        if (autoAimEnabled) {
-            autoAimTurn = autoAim.calculateTurnPower(
-                    validAimingTarget, vision.getYawErrorDegrees());
-        }
-
-        double distanceCm = validAimingTarget ? DistanceUnit.INCH.toCm(
-                vision.getTagCenterHorizontalDistanceInches()) : Double.NaN;
-        if (!shooter.setDistanceTarget(distanceCm)) {
-            // Invalid targeting also cancels an already committed feed.
-            resetFiringSequence(FiringState.WAITING);
-            return validAimingTarget ? autoAimTurn : 0.0;
-        }
-
-        canPrepareToFire = (!autoAimEnabled || vision.isAimCalibrationReady())
-                && shooter.isReady()
-                && (!autoAimEnabled || autoAim.isLocked())
-                && shooter.isPitchReady();
-        transit.requestFeed(canPrepareToFire);
-
-        return validAimingTarget ? autoAimTurn : 0.0;
-    }
-
-    private void resetFiringSequence(FiringState resetState) {
-        if (transit.getState() == Transit.TransitState.OPEN) {
-            intake.clearBallCount();
-        }
-        canPrepareToFire = false;
-        transit.cancelFeeding();
-        if (resetState != FiringState.IDLE) {
-            transit.requestFeed(false);
-        }
-    }
+    public boolean canFire() { return shooting.canFire(); }
+    public boolean canPrepareToFire() { return shooting.canPrepareToFire(); }
+    public FiringState getFiringState() { return shooting.getFiringState(); }
+    public boolean isManualTranslation() { return manualTranslation; }
 
     private double applyDeadband(double input) {
         return Math.abs(input) > DriveConstants.joystickDeadband ? input : 0.0;
