@@ -28,11 +28,11 @@ import java.util.Locale;
 
 /** Test 2: shoot once, travel to the next waypoint, stop for 3 s, cross the field. */
 @Config
-@Autonomous(name = "Red Half Two Tip Test 2 v3", group = "Test")
+@Autonomous(name = "Red Half Two Tip Test 2 v4", group = "Test")
 public final class RedHalfTwoTipTest extends LinearOpMode {
     private enum Stage { INIT, PATH1, SHOOT, RESTORE_HEADING, PATH2, DWELL, PATH3, DONE }
 
-    private static final String BUILD_TAG = "red-half-two-tip-test2-v3-wall-clearance";
+    private static final String BUILD_TAG = "red-half-two-tip-test2-v4-exact-route";
     private static final long AUTO_TIMEOUT_MS = 30_000;
     private static final long PINPOINT_WAIT_MS = 5_000;
     private static final long SHOOT_TIMEOUT_MS = 13_000;
@@ -44,20 +44,21 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
     private static final double PATH_SPEED_FRACTION = 0.35;
     private static final double ROBOT_HALF_WIDTH_INCHES = 423.0 / (2.0 * 25.4);
     private static final double ROBOT_HALF_LENGTH_INCHES = 368.0 / (2.0 * 25.4);
-    private static final double MIN_LEFT_CLEARANCE_INCHES = 4.0;
+    // The requested curve has approximately 1.54 in nominal body clearance.
+    private static final double MIN_LEFT_CLEARANCE_INCHES = 0.5;
+    private static final double LEFT_CLEARANCE_WARNING_INCHES = 4.0;
     private static String previousRun = "No previous test in this Robot Controller session";
 
     private final PoseFactory poses = PoseFactory.degrees();
-    // Field-center coordinates in inches. fieldPose adds 72 at the Pedro boundary.
-    // Waypoint positions follow the Visualizer export. The first leg keeps 90 degrees
-    // during travel, then turns in place to aim the rear shooter at the first waypoint.
-    private final Pose start = fieldPose(-18.0058, -64.0775, 90);
-    private final Pose firstTravelEnd = fieldPose(-18.1072, -40.4166, 90);
-    private final Pose firstShot = fieldPose(-18.1072, -40.4166, 270);
-    private final Pose dwellPoint = fieldPose(-56.8517, -60.5817, 270);
-    private final Pose oppositePoint = fieldPose(-14.6715, 56.6085, 90);
-    // Keep the curve's control X at the dwell point so it starts toward the field interior.
-    private final Pose crossingControl = fieldPose(-56.8517, 5.1069, 0);
+    // Exact Visualizer export, in Pedro inches and degrees. Telemetry also
+    // reports field-center coordinates by subtracting 72 from X and Y.
+    private final Pose start = poses.of(53.9942, 7.9225, 90);
+    private final Pose firstShot = poses.of(53.8928, 31.5834, 270);
+    private final Pose point2Start = poses.of(53.8928, 31.5834, 270);
+    private final Pose dwellPoint = poses.of(15.1483, 11.4183, 270);
+    private final Pose point3Start = poses.of(15.1483, 11.4183, 270);
+    private final Pose oppositePoint = poses.of(57.3285, 128.6085, 90);
+    private final Pose crossingControl = poses.of(1.7328, 77.1069, 0);
 
     private CommandScheduler scheduler;
     private Follower follower;
@@ -117,12 +118,12 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
             while (opModeIsActive()) {
                 if (stage != Stage.DONE) {
                     follower.update();
-                    scheduler.run();
                     if (!pinpointReady() || !finitePose(follower.pose())) {
                         finish("Stopped: invalid pose or Pinpoint " + pinpoint.getDeviceStatus());
                     } else if (elapsedMs(autoStartedNanos) >= AUTO_TIMEOUT_MS) {
                         finish("30-second test timeout");
                     } else if (checkTravelDirection()) {
+                        scheduler.run();
                         advance();
                     }
                 }
@@ -130,6 +131,8 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
                 idle();
             }
         } catch (RuntimeException error) {
+            status = "Error during " + stage + ": " + error;
+            stage = Stage.DONE;
             RobotLog.ee("RedHalfTwoTipTest", error, "Autonomous failed");
             stopAll();
             while (!isStopRequested() && (opModeInInit() || opModeIsActive())) {
@@ -139,23 +142,23 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
                 idle();
             }
         } finally {
-            recordRunSummary();
             scheduler.cancelAll();
             stopAll();
             scheduler.reset();
+            recordRunSummary();
         }
     }
 
     private void advance() {
         switch (stage) {
             case PATH1:
-                if (pathArrived(firstTravelEnd, 8_000)) beginShot();
+                if (pathArrived(firstShot, 8_000)) beginShot();
                 break;
             case SHOOT:
                 advanceShot();
                 break;
             case RESTORE_HEADING:
-                if (holdStable(firstShot, ARRIVAL_TOLERANCE_INCHES)) {
+                if (holdStable(point2Start, ARRIVAL_TOLERANCE_INCHES)) {
                     follow(path2(), Stage.PATH2, "Second path; mechanisms stopped");
                 } else if (elapsedMs(stageStartedNanos) >= RESTORE_TIMEOUT_MS) {
                     finish("Could not restore path 2 start pose / 270 deg heading");
@@ -214,8 +217,8 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
         }
         // ShootCommand.end() has stopped all mechanisms. Restore the exported
         // path2 start pose before following its constant 270-degree heading.
-        targetPose = firstShot;
-        follower.hold(firstShot);
+        targetPose = point2Start;
+        follower.hold(point2Start);
         enter(Stage.RESTORE_HEADING, "Restoring path 2 start heading to 270 deg");
     }
 
@@ -265,7 +268,7 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
 
     private boolean checkTravelDirection() {
         if (leftWallClearanceInches() < MIN_LEFT_CLEARANCE_INCHES) {
-            finish("Left-wall clearance below 4 in; check actual position and odometry");
+            finish("Left-wall clearance below 0.5 in; check actual position and odometry");
             return false;
         }
         if (legStartPose == null) return true;
@@ -340,13 +343,17 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
         return (System.nanoTime() - startedNanos) / 1_000_000L;
     }
 
-    private Pose fieldPose(double x, double y, double headingDegrees) {
-        return poses.of(x + 72.0, y + 72.0, headingDegrees);
+    public Path path1() {
+        return line(start, firstShot).linear(start, firstShot);
     }
 
-    public Path path1() { return line(start, firstTravelEnd).linear(start, firstTravelEnd); }
-    public Path path2() { return line(firstShot, dwellPoint).linear(firstShot, dwellPoint); }
-    public Path path3() { return curve(dwellPoint, crossingControl, oppositePoint).linear(dwellPoint, oppositePoint); }
+    public Path path2() {
+        return line(point2Start, dwellPoint).linear(point2Start, dwellPoint);
+    }
+
+    public Path path3() {
+        return curve(point3Start, crossingControl, oppositePoint).linear(point3Start, oppositePoint);
+    }
 
     private void showTelemetry() {
         telemetry.addData("Build", BUILD_TAG);
@@ -359,7 +366,11 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
             telemetry.addData("Pedro X/Y/H", "%.2f / %.2f in / %.1f deg",
                     p.x(), p.y(), Math.toDegrees(p.heading()));
             telemetry.addData("Field-center X/Y", "%.2f / %.2f in", p.x() - 72.0, p.y() - 72.0);
-            telemetry.addData("Left-wall clearance", "%.2f in", leftWallClearanceInches());
+            double clearance = leftWallClearanceInches();
+            telemetry.addData("Left-wall clearance", "%.2f in", clearance);
+            if (clearance < LEFT_CLEARANCE_WARNING_INCHES) {
+                telemetry.addLine("Close to left wall; follow clearance telemetry");
+            }
             if (legStartPose != null) {
                 telemetry.addData("Path displacement X/Y", "%.2f / %.2f in",
                         p.x() - legStartPose.x(), p.y() - legStartPose.y());
