@@ -74,8 +74,8 @@ public final class RedTwoTipAuto extends LinearOpMode {
 
     @Override
     public void runOpMode() throws InterruptedException {
+        CommandScheduler.getInstance().reset();
         CommandScheduler scheduler = CommandScheduler.getInstance();
-        scheduler.reset();
         try {
             if (Constants.foresightConfig == null) {
                 while (opModeInInit() && !isStopRequested()) {

@@ -19,7 +19,6 @@ import org.firstinspires.ftc.teamcode.commands.ShootCommand;
 import org.firstinspires.ftc.teamcode.pedro.Constants;
 import org.firstinspires.ftc.teamcode.subsystems.intake.Intake;
 import org.firstinspires.ftc.teamcode.subsystems.shooter.Shooter;
-import org.firstinspires.ftc.teamcode.subsystems.shooter.ShooterConstants;
 import org.firstinspires.ftc.teamcode.subsystems.transit.Transit;
 import org.firstinspires.ftc.teamcode.subsystems.vision.CellCluster;
 import org.firstinspires.ftc.teamcode.subsystems.vision.VisionConstants;
@@ -84,8 +83,7 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
                 throw new IllegalStateException("Foresight config missing; deploy tuned Constants.java");
             }
             follower = Constants.create(hardwareMap);
-            shooter = new Shooter(hardwareMap, ShooterConstants.leftShooterDirection.inverted(),
-                    ShooterConstants.rightShooterDirection.inverted());
+            shooter = new Shooter(hardwareMap);
             intake = new Intake(hardwareMap);
             transit = new Transit(hardwareMap);
             pinpoint = hardwareMap.get(GoBildaPinpointDriver.class, Constants.localizerConfig.name.get());
@@ -250,10 +248,11 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
     }
 
     private double shotDistanceCm() {
-        double[] tag = VisionConstants.tagClusterCenterFieldXYInches[
+        // Match the CELL-opening distance used by the shared Shooter calibration.
+        double[] target = VisionConstants.cellTargetFieldXYInches[
                 CellCluster.RED_OPPOSITE_AUDIENCE.getTuningIndex()];
-        return DistanceUnit.INCH.toCm(Math.hypot(tag[0] - (holdPose.x() - 72.0),
-                tag[1] - (holdPose.y() - 72.0)));
+        return DistanceUnit.INCH.toCm(Math.hypot(target[0] - (holdPose.x() - 72.0),
+                target[1] - (holdPose.y() - 72.0)));
     }
 
     private void follow(Path path, Stage next, String message) {

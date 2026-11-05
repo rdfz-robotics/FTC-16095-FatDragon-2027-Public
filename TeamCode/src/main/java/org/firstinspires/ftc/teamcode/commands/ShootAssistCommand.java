@@ -59,7 +59,7 @@ public class ShootAssistCommand extends ParallelCommandGroup {
         this.autoAimEnabled = autoAimEnabled;
         shooting = new ShootCommand(shooter, intake, transit,
                 () -> vision.hasValidAimingTarget() ? DistanceUnit.INCH.toCm(
-                        vision.getTagCenterHorizontalDistanceInches()) : Double.NaN,
+                        vision.getTargetHorizontalDistanceInches()) : Double.NaN,
                 () -> !autoAimEnabled || (vision.isAimCalibrationReady() && autoAim.isLocked()),
                 () -> gamepadEx.getTrigger(GamepadKeys.Trigger.LEFT_TRIGGER)
                         > org.firstinspires.ftc.teamcode.opmodes.teleops.TeleOpConstants.triggerThreshold,

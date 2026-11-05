@@ -1,0 +1,16 @@
+// Export the actual build dependencies; the Python runner selects runtime JARs.
+gradle.projectsEvaluated {
+    def team = gradle.rootProject.project(':TeamCode')
+    team.tasks.register('exportHostCheckClasspath') {
+        dependsOn 'compileDebugJavaWithJavac'
+        doLast {
+            def compile = team.tasks.named('compileDebugJavaWithJavac').get()
+            def target = new File(gradle.rootProject.layout.buildDirectory.get().asFile, 'host-checks')
+            target.mkdirs()
+            new File(target, 'classpath.txt').text = (
+                    compile.classpath.files.collect { it.absolutePath }
+                    + [compile.destinationDirectory.get().asFile.absolutePath]
+                    + team.android.bootClasspath.collect { it.absolutePath }).join('\n')
+        }
+    }
+}

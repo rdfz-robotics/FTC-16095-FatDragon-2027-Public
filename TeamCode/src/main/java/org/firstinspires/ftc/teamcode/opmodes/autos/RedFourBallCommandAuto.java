@@ -18,7 +18,6 @@ import org.firstinspires.ftc.teamcode.pedro.Constants;
 import org.firstinspires.ftc.teamcode.commands.ShootCommand;
 import org.firstinspires.ftc.teamcode.subsystems.intake.Intake;
 import org.firstinspires.ftc.teamcode.subsystems.shooter.Shooter;
-import org.firstinspires.ftc.teamcode.subsystems.shooter.ShooterConstants;
 import org.firstinspires.ftc.teamcode.subsystems.transit.Transit;
 import org.firstinspires.ftc.teamcode.subsystems.vision.CellCluster;
 import org.firstinspires.ftc.teamcode.subsystems.vision.VisionConstants;
@@ -103,10 +102,7 @@ public final class RedFourBallCommandAuto extends LinearOpMode {
             }
 
             follower = Constants.create(hardwareMap);
-            // Reverse both flywheel motors for this test's observed hardware direction.
-            shooter = new Shooter(hardwareMap,
-                    ShooterConstants.leftShooterDirection.inverted(),
-                    ShooterConstants.rightShooterDirection.inverted());
+            shooter = new Shooter(hardwareMap);
             intake = new Intake(hardwareMap);
             transit = new Transit(hardwareMap);
             pinpoint = hardwareMap.get(GoBildaPinpointDriver.class,
@@ -319,11 +315,12 @@ public final class RedFourBallCommandAuto extends LinearOpMode {
 
     private double shotDistanceCm() {
         Pose shotPose = shootHoldPose == null ? firstCorner : shootHoldPose;
-        double[] tag = VisionConstants.tagClusterCenterFieldXYInches[
+        // Match the CELL-opening distance used by the shared Shooter calibration.
+        double[] target = VisionConstants.cellTargetFieldXYInches[
                 CellCluster.RED_OPPOSITE_AUDIENCE.getTuningIndex()];
         return DistanceUnit.INCH.toCm(Math.hypot(
-                tag[0] - (shotPose.x() - 72.0),
-                tag[1] - (shotPose.y() - 72.0)));
+                target[0] - (shotPose.x() - 72.0),
+                target[1] - (shotPose.y() - 72.0)));
     }
 
     private boolean pinpointReady() {
