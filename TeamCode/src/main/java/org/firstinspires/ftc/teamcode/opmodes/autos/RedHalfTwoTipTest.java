@@ -12,6 +12,8 @@ import com.pedropathing.paths.Path;
 import com.qualcomm.hardware.gobilda.GoBildaPinpointDriver;
 import com.qualcomm.robotcore.eventloop.opmode.Autonomous;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
+import com.qualcomm.robotcore.hardware.DcMotor;
+import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.util.RobotLog;
 
 import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
@@ -29,18 +31,18 @@ import java.util.Map;
 
 /** Test 2: shoot once, travel to the next waypoint, stop for 3 s, cross the field. */
 @Config
-@Autonomous(name = "Red Half Two Tip Test 2 v5", group = "Test")
+@Autonomous(name = "Red Half Two Tip Test 2 v6", group = "Test")
 public final class RedHalfTwoTipTest extends LinearOpMode {
-    private enum Stage { INIT, PATH1, SHOOT, RESTORE_HEADING, PATH2, DWELL, PATH3, DONE }
+    private enum Stage { INIT, PATH1, SHOOT, PATH2, DWELL, PATH3, DONE }
 
-    private static final String BUILD_TAG = "red-half-two-tip-test2-v5-exact-route";
+    private static final String BUILD_TAG = "red-half-two-tip-test2-v6-exact-route";
     private static final long AUTO_TIMEOUT_MS = 30_000;
     private static final long PINPOINT_WAIT_MS = 5_000;
     private static final long START_POSE_TIMEOUT_MS = 1_500;
     private static final long SHOOT_TIMEOUT_MS = 13_000;
-    private static final long RESTORE_TIMEOUT_MS = 5_000;
     private static final long DWELL_MS = 3_000;
     private static final long STABLE_MS = 200;
+    private static final long TELEMETRY_INTERVAL_MS = 100;
     private static final double ARRIVAL_TOLERANCE_INCHES = 2.5;
     private static final double PATH1_LATERAL_TOLERANCE_INCHES = 3.0;
     public static long feedDurationMs = 2_000;
@@ -80,6 +82,7 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
     private long previousLoopNanos;
     private double maxLoopMs;
     private String firstDriveCommand;
+    private long lastTelemetryNanos;
 
     @Override
     public void runOpMode() throws InterruptedException {
@@ -89,6 +92,7 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
             if (Constants.foresightConfig == null) {
                 throw new IllegalStateException("Foresight config missing; deploy tuned Constants.java");
             }
+            prepareDriveMotors();
             follower = Constants.create(hardwareMap);
             shooter = new Shooter(hardwareMap, ShooterConstants.leftShooterDirection.inverted(),
                     ShooterConstants.rightShooterDirection.inverted());
@@ -160,6 +164,21 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
         }
     }
 
+    private void prepareDriveMotors() {
+        String[] motorNames = {
+                Constants.drivetrainConfig.frontLeftName.get(),
+                Constants.drivetrainConfig.frontRightName.get(),
+                Constants.drivetrainConfig.backLeftName.get(),
+                Constants.drivetrainConfig.backRightName.get()
+        };
+        for (String name : motorNames) {
+            DcMotorEx motor = hardwareMap.get(DcMotorEx.class, name);
+            motor.setPower(0.0);
+            // Pedro controls power itself. Clear any encoder-control mode left by a test.
+            motor.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        }
+    }
+
     private boolean confirmStartPose() {
         stopFollower();
         follower.setPose(start);
@@ -188,13 +207,6 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
             case SHOOT:
                 advanceShot();
                 break;
-            case RESTORE_HEADING:
-                if (holdStable(point2Start, ARRIVAL_TOLERANCE_INCHES)) {
-                    follow(path2(), Stage.PATH2, "Second path; mechanisms stopped");
-                } else if (elapsedMs(stageStartedNanos) >= RESTORE_TIMEOUT_MS) {
-                    finish("Could not restore path 2 start pose / 270 deg heading");
-                }
-                break;
             case PATH2:
                 if (pathArrived(dwellPoint, 8_000)) {
                     stopFollower();
@@ -216,17 +228,12 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
     }
 
     private void beginShot() {
-        Pose actual = follower.pose();
-        double[] target = VisionConstants.cellTargetFieldXYInches[
-                CellCluster.RED_OPPOSITE_AUDIENCE.getTuningIndex()];
-        double bearing = Math.toDegrees(Math.atan2(target[1] - (actual.y() - 72.0),
-                target[0] - (actual.x() - 72.0)));
-        // The shooter faces the rear, in the same direction as the Limelight.
-        double chassisHeading = ((bearing - 180.0) % 360.0 + 360.0) % 360.0;
-        holdPose = poses.of(actual.x(), actual.y(), chassisHeading);
+        // Heading describes the intake/front. At 270 deg the rear shooter faces 90 deg.
+        // Hold the exported waypoint throughout firing to preserve the requested route.
+        holdPose = firstShot;
         targetPose = holdPose;
         follower.hold(holdPose);
-        enter(Stage.SHOOT, "Turning rear shooter to red target and firing preloads");
+        enter(Stage.SHOOT, "Holding exported waypoint at 270 deg and firing preloads");
         shootCommand = new ShootCommand(shooter, intake, transit,
                 this::shotDistanceCm, () -> holdStable(holdPose, 1.5),
                 feedDurationMs, SHOOT_TIMEOUT_MS);
@@ -246,11 +253,11 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
             finish("ShootCommand ended: " + shootCommand.getResult());
             return;
         }
-        // ShootCommand.end() has stopped all mechanisms. Restore the exported
-        // path2 start pose before following its constant 270-degree heading.
-        targetPose = point2Start;
-        follower.hold(point2Start);
-        enter(Stage.RESTORE_HEADING, "Restoring path 2 start heading to 270 deg");
+        if (!atPose(firstShot, 1.5)) {
+            finish("Pose drifted at shot completion");
+            return;
+        }
+        follow(path2(), Stage.PATH2, "Second path; mechanisms stopped");
     }
 
     private boolean pathArrived(Pose target, long timeoutMs) {
@@ -363,6 +370,7 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
         status = message;
         stageStartedNanos = System.nanoTime();
         stableSinceNanos = -1;
+        lastTelemetryNanos = 0;
         RobotLog.ii("RedHalfTwoTipTest", next + " | " + message);
     }
 
@@ -414,6 +422,8 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
     }
 
     private void showTelemetry() {
+        if (lastTelemetryNanos != 0 && elapsedMs(lastTelemetryNanos) < TELEMETRY_INTERVAL_MS) return;
+        lastTelemetryNanos = System.nanoTime();
         telemetry.addData("Build", BUILD_TAG);
         if (stage == Stage.INIT) telemetry.addData("Previous run", previousRun);
         telemetry.addData("Stage", stage);
@@ -442,6 +452,21 @@ public final class RedHalfTwoTipTest extends LinearOpMode {
             if (targetPose != null) {
                 telemetry.addData("Target Pedro X/Y/H", "%.2f / %.2f / %.1f deg",
                         targetPose.x(), targetPose.y(), Math.toDegrees(targetPose.heading()));
+            }
+            if (stage == Stage.PATH1 || stage == Stage.PATH2 || stage == Stage.PATH3) {
+                Pose reference = follower.closestPose();
+                telemetry.addData("Path reference X/Y/H", "%.2f / %.2f / %.1f deg",
+                        reference.x(), reference.y(), Math.toDegrees(reference.heading()));
+            }
+            if (stage != Stage.INIT && stage != Stage.DONE && stage != Stage.DWELL) {
+                Map<String, Object> drive = follower.drivetrain.debug();
+                telemetry.addData("Drive F/left/CCW", "%.3f / %.3f / %.3f",
+                        drive.get("forward"), drive.get("strafe"), drive.get("turn"));
+                telemetry.addData("Wheels FL/FR/BL/BR", "%.2f / %.2f / %.2f / %.2f",
+                        drive.get("leftFrontWheelPower"), drive.get("rightFrontWheelPower"),
+                        drive.get("leftBackWheelPower"), drive.get("rightBackWheelPower"));
+                RobotLog.ii("RedHalfTwoTipTest", "%s | pose %.2f %.2f %.1f | velocity %s | drive %s",
+                        stage, p.x(), p.y(), Math.toDegrees(p.heading()), follower.velocity(), drive);
             }
         }
         if (shootCommand != null) {
