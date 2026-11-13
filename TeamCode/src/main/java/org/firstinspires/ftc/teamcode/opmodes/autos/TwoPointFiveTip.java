@@ -39,7 +39,8 @@ import org.firstinspires.ftc.teamcode.subsystems.vision.Vision;
 public class TwoPointFiveTip extends LinearOpMode {
     private static final double SHOT_VELOCITY_TICKS_PER_SECOND = 1630.0;
     private static final double FIRST_SHOT_VELOCITY_TICKS_PER_SECOND = 1600.0;
-    private static final double THIRD_SHOT_VELOCITY_TICKS_PER_SECOND = 1650.0;
+    // 2026-11-13: third shot uses the same flywheel target as the second shot (was 1650).
+    private static final double THIRD_SHOT_VELOCITY_TICKS_PER_SECOND = SHOT_VELOCITY_TICKS_PER_SECOND;
     private static final long SHOT_DURATION_MS = 900;
     private static final long SHOT_TIMEOUT_MS = 7000;
     private static final long PATH_4_WAIT_MS = 1000;
