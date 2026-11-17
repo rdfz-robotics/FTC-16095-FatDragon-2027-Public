@@ -4,18 +4,26 @@ import com.arcrobotics.ftclib.command.SubsystemBase;
 import com.arcrobotics.ftclib.controller.PIDFController;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
-import com.qualcomm.robotcore.hardware.DcMotorSimple;
 import com.qualcomm.robotcore.hardware.HardwareMap;
 import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.util.Range;
 
+import java.util.Objects;
+import java.util.function.DoubleSupplier;
+
 public class Shooter extends SubsystemBase {
+    private static final int SHOT_POINTS_PER_RANGE = 5;
+
     private final DcMotorEx leftShooter;
     private final DcMotorEx rightShooter;
     private final Servo pitchServo;
     // Both motors drive one flywheel; only the right encoder supplies speed feedback.
     private final PIDFController rightController;
+    private final DoubleSupplier distanceVelocityScale;
+    // Zero keeps distance-based velocity; positive values override velocity only, not pitch.
+    private final DoubleSupplier fixedDistanceTargetVelocity;
 
+    private double distanceVelocityOffsetTicksPerSecond;
     private double targetVelocity = Double.NaN;
     private double velocitySettleReferenceTarget = Double.NaN;
     private boolean velocityControlActive;
@@ -31,17 +39,47 @@ public class Shooter extends SubsystemBase {
     private long pitchChangedAtNanos;
 
     public Shooter(HardwareMap hardwareMap) {
-        this(hardwareMap, ShooterConstants.leftShooterDirection, ShooterConstants.rightShooterDirection);
+        this(hardwareMap, () -> 1.0);
     }
 
-    public Shooter(HardwareMap hardwareMap, DcMotorSimple.Direction leftDirection,
-                   DcMotorSimple.Direction rightDirection) {
+    /** Per-instance scaling for distance-based targets; direct velocity/fixed-power tests are unchanged. */
+    public Shooter(HardwareMap hardwareMap, DoubleSupplier distanceVelocityScale) {
+        this(hardwareMap, distanceVelocityScale, () -> 0.0);
+    }
+
+    /** Fixed encoder velocity for all distance-based shots; pitch still follows distance. */
+    public Shooter(HardwareMap hardwareMap, double fixedVelocityTicksPerSecond) {
+        this(hardwareMap, () -> 1.0, constantVelocity(fixedVelocityTicksPerSecond));
+    }
+
+    /** Allows an autonomous routine to select its fixed velocity for each approach. */
+    public static Shooter withFixedShotVelocity(HardwareMap hardwareMap, DoubleSupplier velocity) {
+        Objects.requireNonNull(velocity);
+        return new Shooter(hardwareMap, () -> 1.0, () -> requirePositiveVelocity(velocity.getAsDouble()));
+    }
+
+    private static DoubleSupplier constantVelocity(double velocity) {
+        double validatedVelocity = requirePositiveVelocity(velocity);
+        return () -> validatedVelocity;
+    }
+
+    private static double requirePositiveVelocity(double velocity) {
+        if (!Double.isFinite(velocity) || velocity <= 0.0) {
+            throw new IllegalArgumentException("Fixed shot velocity must be finite and positive");
+        }
+        return velocity;
+    }
+
+    private Shooter(HardwareMap hardwareMap, DoubleSupplier distanceVelocityScale,
+                    DoubleSupplier fixedDistanceTargetVelocity) {
+        this.distanceVelocityScale = Objects.requireNonNull(distanceVelocityScale);
+        this.fixedDistanceTargetVelocity = fixedDistanceTargetVelocity;
         leftShooter = hardwareMap.get(DcMotorEx.class, ShooterConstants.leftShooterName);
         rightShooter = hardwareMap.get(DcMotorEx.class, ShooterConstants.rightShooterName);
         pitchServo = hardwareMap.get(Servo.class, ShooterConstants.pitchServoName);
 
-        leftShooter.setDirection(leftDirection);
-        rightShooter.setDirection(rightDirection);
+        leftShooter.setDirection(ShooterConstants.leftShooterDirection);
+        rightShooter.setDirection(ShooterConstants.rightShooterDirection);
         leftShooter.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
         rightShooter.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
 
@@ -83,8 +121,23 @@ public class Shooter extends SubsystemBase {
     }
 
     public boolean setDistanceTarget(double distanceCm) {
+        return setDistanceTarget(distanceCm, true);
+    }
+
+    public void adjustDistanceVelocityOffset(double deltaTicksPerSecond) {
+        distanceVelocityOffsetTicksPerSecond += deltaTicksPerSecond;
+    }
+
+    public double getDistanceVelocityOffsetTicksPerSecond() {
+        return distanceVelocityOffsetTicksPerSecond;
+    }
+
+    public boolean setDistanceTarget(double distanceCm, boolean updatePitch) {
         double[][] points = getDistanceShotPoints();
-        if (!areDistanceShotValuesValid(points) || !Double.isFinite(distanceCm) || distanceCm < 0.0) {
+        double scale = distanceVelocityScale.getAsDouble();
+        if (points == null || !areVelocityControlValuesCalibrated()
+                || !Double.isFinite(distanceCm) || distanceCm < 0.0
+                || !Double.isFinite(scale) || scale <= 0.0 || scale > 1.0) {
             stop();
             return false;
         }
@@ -94,52 +147,49 @@ public class Shooter extends SubsystemBase {
             if (point[0] <= distanceCm && (lower == null || point[0] > lower[0])) lower = point;
             if (point[0] >= distanceCm && (upper == null || point[0] < upper[0])) upper = point;
         }
-        // Clamp to the configured endpoints; interpolate only between adjacent points.
+        // Adjacent points also cover the gap between tables. Clamp beyond the outer endpoints.
         if (lower == null) lower = upper;
         if (upper == null) upper = lower;
         double fraction = lower == upper ? 0.0
                 : (distanceCm - lower[0]) / (upper[0] - lower[0]);
         double velocity = (1.0 - fraction) * lower[1] + fraction * upper[1];
-        double pitch = (1.0 - fraction) * lower[2] + fraction * upper[2];
-        setPitchPosition(pitch);
-        setTargetVelocity(velocity);
+        if (updatePitch) {
+            double pitch = (1.0 - fraction) * lower[2] + fraction * upper[2];
+            setPitchPosition(pitch);
+        }
+        double fixedVelocity = fixedDistanceTargetVelocity.getAsDouble();
+        setTargetVelocity(fixedVelocity > 0.0
+                ? fixedVelocity : velocity * scale + distanceVelocityOffsetTicksPerSecond);
         return hasTargetVelocity();
     }
 
     public static boolean areDistanceShotValuesValid() {
-        return areDistanceShotValuesValid(getDistanceShotPoints());
+        return areVelocityControlValuesCalibrated() && getDistanceShotPoints() != null;
     }
 
-    private static double[][] getDistanceShotPoints() {
-        double[][] additional = ShooterConstants.additionalShotPoints;
-        if (additional == null) return null;
-        double[][] points = new double[additional.length + 2][];
-        points[0] = new double[]{ShooterConstants.centerDistanceCm,
-                ShooterConstants.centerVelocityTicksPerSecond, ShooterConstants.centerPitchPosition};
-        points[1] = new double[]{ShooterConstants.wallDistanceCm,
-                ShooterConstants.wallVelocityTicksPerSecond, ShooterConstants.wallPitchPosition};
-        System.arraycopy(additional, 0, points, 2, additional.length);
-        return points;
-    }
-
-    private static boolean areDistanceShotValuesValid(double[][] points) {
-        if (!areVelocityControlValuesCalibrated() || points == null
+    /** Returns the ordered near and far points, or null when the tables are invalid. */
+    public static double[][] getDistanceShotPoints() {
+        double[][] near = ShooterConstants.nearShotPoints;
+        double[][] far = ShooterConstants.farShotPoints;
+        if (near == null || far == null
+                || near.length != SHOT_POINTS_PER_RANGE || far.length != SHOT_POINTS_PER_RANGE
                 || !Double.isFinite(ShooterConstants.pitchMinPosition)
                 || !Double.isFinite(ShooterConstants.pitchMaxPosition)
                 || ShooterConstants.pitchMinPosition < 0.0
                 || ShooterConstants.pitchMaxPosition > 1.0
                 || ShooterConstants.pitchMinPosition > ShooterConstants.pitchMaxPosition) {
-            return false;
+            return null;
         }
+        double[][] points = new double[near.length + far.length][];
+        System.arraycopy(near, 0, points, 0, near.length);
+        System.arraycopy(far, 0, points, near.length, far.length);
         for (int i = 0; i < points.length; i++) {
             double[] point = points[i];
             if (point == null || point.length != 3
-                    || !isDistancePointValid(point[0], point[1], point[2])) return false;
-            for (int j = 0; j < i; j++) {
-                if (point[0] == points[j][0]) return false;
-            }
+                    || !isDistancePointValid(point[0], point[1], point[2])
+                    || (i > 0 && point[0] <= points[i - 1][0])) return null;
         }
-        return true;
+        return points;
     }
 
     private static boolean isDistancePointValid(double distanceCm, double velocity, double pitch) {

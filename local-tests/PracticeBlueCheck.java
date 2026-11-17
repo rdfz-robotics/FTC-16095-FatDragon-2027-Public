@@ -84,7 +84,6 @@ public class PracticeBlueCheck {
         TestVision() { super(null, Alliance.BLUE); }
         @Override public boolean hasValidAimingTarget() { return valid; }
         @Override public double getTargetHorizontalDistanceInches() { return 400.0 / 2.54; }
-        @Override public double getTagCenterHorizontalDistanceInches() { return 200.0 / 2.54; }
         @Override public double getYawErrorDegrees() { return 90.0; }
     }
 
@@ -160,7 +159,7 @@ public class PracticeBlueCheck {
         TransitConstants.limitPositionsCalibrated = true;
         TransitConstants.feedReverseTime = 0.200;
         TransitConstants.feedReversePower = -0.5;
-        near(TransitConstants.intakeReverseForwardPower, 0.4, "LB transit forward power");
+        TransitConstants.intakeReverseForwardPower = 0.4;
         intake.updateInputs(true, false);
         transit.updateIntakeRequest(true, false);
         near(intake.getRequestedPower(), IntakeConstants.activePower, "LT runs intake forward");
@@ -220,8 +219,8 @@ public class PracticeBlueCheck {
         near(drive.forward, 0.5, "manual forward input");
         near(drive.strafe, 0.25, "manual strafe input");
         near(drive.turn, -0.4, "manual turn input");
-        near(shooter.getTargetVelocity(), 1500.0, "distance-adaptive PID target");
-        near(shooter.getPitchPosition(), 0.3, "distance-adaptive pitch");
+        near(shooter.getTargetVelocity(), 2000.0, "CELL-opening distance selects the PID target");
+        near(shooter.getPitchPosition(), 0.2, "CELL-opening distance selects the pitch");
         check(aim.calls == 0, "practice never calculates automatic turn power");
         check(intake.intakeRequested, "LT intake remains available");
         gamepad.left_trigger = 0.0f;

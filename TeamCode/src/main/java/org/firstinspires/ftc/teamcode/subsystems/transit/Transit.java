@@ -60,7 +60,7 @@ public class Transit extends SubsystemBase {
 
     // Once the gate opens, only explicit cancellation ends the reverse/feed sequence.
     public void requestFeed(boolean readyToOpenLimit) {
-        if (firingState != FiringState.REVERSING && firingState != FiringState.FEEDING) {
+        if (!isFeedActive()) {
             double reverseTime = TransitConstants.feedReverseTime;
             double reversePower = TransitConstants.feedReversePower;
             if (!readyToOpenLimit || !areLimitPositionsCalibrated()
@@ -88,6 +88,10 @@ public class Transit extends SubsystemBase {
         if (firingState == FiringState.FEEDING) {
             setPower(TransitConstants.feedPower);
         }
+    }
+
+    public boolean isFeedActive() {
+        return firingState == FiringState.REVERSING || firingState == FiringState.FEEDING;
     }
 
     public void cancelFeeding() {
