@@ -20,7 +20,8 @@ import org.firstinspires.ftc.teamcode.subsystems.drive.DriveConstants;
 import java.util.OptionalDouble;
 
 public class Constants {
-    // Replace these blocks with the corresponding AutoTune Java exports after tuning.
+    // Motor names, directions and pod geometry are shared with the competition Drive.
+    // Apply measured hardware changes to DriveConstants; its pod offsets are in millimeters.
     public static MecanumConfig drivetrainConfig = new MecanumConfig(c -> {
         c.frontLeftName.set(DriveConstants.leftFrontMotorName);
         c.backLeftName.set(DriveConstants.leftBackMotorName);
@@ -44,29 +45,30 @@ public class Constants {
         c.yPodDirection.set(DriveConstants.pinpointStrafePodDirection);
     });
 
+    // FTC1 measurements exported by the Foresight Tuner.
     public static ForesightConfig foresightConfig = new ForesightConfig(
             c -> {
-                Controller primaryTranslationalForward = Controller.proportional(0.30078914408329804);
-                Controller secondaryTranslationalForward = Controller.proportional(0.11113355150482486);
-                Controller primaryTranslationalLateral = Controller.proportional(0.9011460873421373);
-                Controller secondaryTranslationalLateral = Controller.proportional(0.33294940020599545);
+                Controller primaryTranslationalForward = Controller.proportional(0.29362974330914304);
+                Controller secondaryTranslationalForward = Controller.proportional(0.10848834422148654);
+                Controller primaryTranslationalLateral = Controller.proportional(0.4018130159224158);
+                Controller secondaryTranslationalLateral = Controller.proportional(0.14845917274180762);
 
                 c.forwardTranslational.set(Controller.piecewise(secondaryTranslationalForward).put(2.5, primaryTranslationalForward));
                 c.strafeTranslational.set(Controller.piecewise(secondaryTranslationalLateral).put(2.5, primaryTranslationalLateral));
 
-                c.coast.set(Controller.proportionalFeedforward(0.01911059273741491));
-                c.brake.set(Controller.proportionalFeedforward(0.01624400382680267));
+                c.coast.set(Controller.proportionalFeedforward(0.01367301191849275));
+                c.brake.set(Controller.proportionalFeedforward(0.011622060130718837));
 
-                c.headingFeedback.set(Controller.proportional(4.717434192704739));
-                c.headingBrakeCoefficients.set(Vector2D.cartesian(0.08312283414119992, -8.564387987015544E-4));
+                c.headingFeedback.set(Controller.proportional(4.734866377156585));
+                c.headingBrakeCoefficients.set(Vector2D.cartesian(0.05806231553416445, 0.005340939042939729));
 
-                c.linearBrakeCoefficients.set(Matrix.diag(0.16871065428885162, 0.07420113929680525));
-                c.quadraticBrakeCoefficients.set(Matrix.diag(-0.002247858134087847, 0.001471049425502552));
+                c.linearBrakeCoefficients.set(Matrix.diag(0.11655073581304821, 0.04934958786379315));
+                c.quadraticBrakeCoefficients.set(Matrix.diag(0.0013526590539923165, 0.002103772477380755));
 
-                c.maxAchievableForwardVelocity.set(54.471127258910975);
-                c.maxAchievableStrafeVelocity.set(54.65582602741854);
-                c.naturalForwardDeceleration.set(64.98071052759337);
-                c.naturalStrafeDeceleration.set(90.19049501060306);
+                c.maxAchievableForwardVelocity.set(81.79608478313465);
+                c.maxAchievableStrafeVelocity.set(64.48601849280288);
+                c.naturalForwardDeceleration.set(78.37278279390627);
+                c.naturalStrafeDeceleration.set(73.14837745654077);
             }
     );
 
